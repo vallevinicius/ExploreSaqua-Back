@@ -5,6 +5,9 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { compressImages } from '../middlewares/compression.middleware';
+import { haversineDistanceMeters } from '../utils/geo';
+
+const MAX_VISIT_DISTANCE_METERS = 500;
 
 const UPLOADS_DIR = path.resolve("uploads");
 
@@ -289,9 +292,11 @@ router.put('/password',
  *         application/json:
  *           schema:
  *             type: object
- *             required: [localId]
+ *             required: [localId, latitude, longitude]
  *             properties:
  *               localId: { type: integer }
+ *               latitude: { type: number, description: "Latitude atual do usuário (obtida via geolocalização do navegador)." }
+ *               longitude: { type: number, description: "Longitude atual do usuário." }
  *     responses:
  *       200:
  *         description: Visita registrada (nova ou atualizada).
@@ -304,7 +309,7 @@ router.put('/password',
  *                 visited: { type: boolean }
  *                 created: { type: boolean, description: "true se era a primeira visita a este local." }
  *       400:
- *         description: Parâmetros inválidos.
+ *         description: Parâmetros inválidos, local sem coordenadas cadastradas, ou usuário a mais de 500m do local.
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -319,10 +324,23 @@ router.put('/password',
 router.post('/:userId/visits', async (req, res) => {
   try {
     const userId = Number(req.params.userId);
-    const { localId } = req.body;
+    const { localId, latitude, longitude } = req.body;
 
     if (Number.isNaN(userId) || !localId) {
       return res.status(400).json({ message: 'Parâmetros inválidos' });
+    }
+
+    const userLat = Number(latitude);
+    const userLng = Number(longitude);
+    if (
+      latitude === undefined ||
+      longitude === undefined ||
+      Number.isNaN(userLat) ||
+      Number.isNaN(userLng)
+    ) {
+      return res.status(400).json({
+        message: 'É necessário informar sua localização atual (latitude/longitude) para confirmar a visita.',
+      });
     }
 
     // checar usuário autenticado
@@ -338,6 +356,20 @@ router.post('/:userId/visits', async (req, res) => {
     // Verifica existência do local
     const local = await prisma.local.findUnique({ where: { localId: Number(localId) } });
     if (!local) return res.status(404).json({ message: 'Local não encontrado' });
+
+    // O local precisa ter coordenadas cadastradas para permitir a validação de distância
+    if (local.latitude == null || local.longitude == null) {
+      return res.status(400).json({
+        message: 'Este local não possui localização cadastrada — não é possível confirmar a visita.',
+      });
+    }
+
+    const distancia = haversineDistanceMeters(userLat, userLng, local.latitude, local.longitude);
+    if (distancia > MAX_VISIT_DISTANCE_METERS) {
+      return res.status(400).json({
+        message: `Você está a ${Math.round(distancia)}m do local. Precisa estar a até ${MAX_VISIT_DISTANCE_METERS}m para confirmar a visita.`,
+      });
+    }
 
     // Cria ou atualiza registro de visita
     const existing = await prisma.usuarioLocal.findFirst({
@@ -360,6 +392,69 @@ router.post('/:userId/visits', async (req, res) => {
     return res.status(200).json({ message: 'Visita registrada', visited: true, created });
   } catch (error: any) {
     console.error('Erro ao registrar visita via rota:', error);
+    return res.status(500).json({ message: 'Erro interno do servidor' });
+  }
+});
+
+/**
+ * @swagger
+ * /api/users/{userId}/visits/{localId}:
+ *   get:
+ *     summary: Verifica se o usuário logado já visitou um determinado local
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema: { type: integer }
+ *         description: Precisa ser o mesmo ID do usuário autenticado.
+ *       - in: path
+ *         name: localId
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Resultado da verificação.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 visited: { type: boolean }
+ *       400:
+ *         description: Parâmetros inválidos.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       403:
+ *         description: O ID na URL não é o do usuário autenticado.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ */
+router.get('/:userId/visits/:localId', async (req, res) => {
+  try {
+    const userId = Number(req.params.userId);
+    const localId = Number(req.params.localId);
+
+    if (Number.isNaN(userId) || Number.isNaN(localId)) {
+      return res.status(400).json({ message: 'Parâmetros inválidos' });
+    }
+
+    // checar usuário autenticado
+    const authUser = (req as any).user;
+    if (!authUser || authUser.id !== userId) {
+      return res.status(403).json({ message: 'Acesso negado' });
+    }
+
+    const visita = await prisma.usuarioLocal.findFirst({
+      where: { usuarioId: userId, localId },
+    });
+
+    return res.status(200).json({ visited: !!visita });
+  } catch (error: any) {
+    console.error('Erro ao verificar visita via rota:', error);
     return res.status(500).json({ message: 'Erro interno do servidor' });
   }
 });
