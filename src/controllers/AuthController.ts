@@ -26,7 +26,7 @@ class AuthController {
       if (!username || !password) {
         return res
           .status(400)
-          .json({ message: "Utilizador e senha são obrigatórios." });
+          .json({ message: "Usuário e senha são obrigatórios." });
       }
 
       const data = await AuthService.login(username, password);

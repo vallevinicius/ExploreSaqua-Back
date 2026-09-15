@@ -52,7 +52,7 @@ class UserController {
             if (!userId) return res.status(401).json({ message: "Não autorizado" });
 
             await AuthService.deleteUser(userId);
-            return res.json({ message: "Perfil de utilizador excluído com sucesso." });
+            return res.json({ message: "Perfil de usuário excluído com sucesso." });
         } catch (error: any) {
             return res.status(400).json({ message: error.message });
         }

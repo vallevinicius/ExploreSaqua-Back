@@ -67,7 +67,7 @@ if (!ADMIN_USER || !ADMIN_PASSWORD || !JWT_SECRET) {
     "Por favor, defina ADMIN_USER, ADMIN_PASSWORD, e ADMIN_JWT_SECRET"
   );
   console.error(
-    "no seu ficheiro .env (ou .env.local) antes de iniciar o servidor."
+    "no seu arquivo .env (ou .env.local) antes de iniciar o servidor."
   );
   console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
   throw new Error(
@@ -245,7 +245,7 @@ export class AdminController {
             });
 
             emailInfo = {
-              subject: "Seu cadastro no MeideSaquá foi Aprovado!",
+              subject: "Seu cadastro no ExploreSaqua foi Aprovado!",
               html: `
                 <h1>Olá, ${updated.nomeResponsavel}!</h1>
                 <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado e já está visível na nossa plataforma!</p>
@@ -253,7 +253,7 @@ export class AdminController {
                 <p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p>
                 <br>
                 <p>Atenciosamente,</p>
-                <p><strong>Equipe MeideSaquá.</strong></p>
+                <p><strong>Equipe ExploreSaqua.</strong></p>
               `,
             };
             return updated;
@@ -363,14 +363,14 @@ export class AdminController {
 
               emailInfo = {
                 subject:
-                  "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
+                  "Sua solicitação de atualização no ExploreSaqua foi Aprovada!",
                 html: `
                   <h1>Olá, ${updated.nomeResponsavel}!</h1>
                   <p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada.</p>
                   <p>As novas informações já estão visíveis para todos na plataforma.</p>
                   <br>
                   <p>Atenciosamente,</p>
-                  <p><strong>Equipe MeideSaquá</strong></p>
+                  <p><strong>Equipe ExploreSaqua</strong></p>
                 `,
               };
               return updated;
@@ -386,14 +386,14 @@ export class AdminController {
 
               emailInfo = {
                 subject:
-                  "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
+                  "Sua solicitação de atualização no ExploreSaqua foi Aprovada!",
                 html: `
                   <h1>Olá, ${updated.nomeResponsavel}!</h1>
                   <p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada.</p>
                   <p>As novas informações já estão visíveis para todos na plataforma.</p>
                   <br>
                   <p>Atenciosamente,</p>
-                  <p><strong>Equipe MeideSaquá</strong></p>
+                  <p><strong>Equipe ExploreSaqua</strong></p>
                 `,
               };
               return updated;
@@ -455,14 +455,14 @@ export class AdminController {
             }
 
             emailInfo = {
-              subject: "Seu local foi removido da plataforma MeideSaquá",
+              subject: "Seu local foi removido da plataforma ExploreSaqua",
               html: `
                 <h1>Olá, ${local.nomeResponsavel}.</h1>
                 <p>Informamos que a sua solicitação para remover o local <strong>${local.nomeLocal}</strong> da nossa plataforma foi concluída com sucesso.</p>
                 <p>Lamentamos a sua partida e esperamos poder colaborar com você novamente no futuro.</p>
                 <br>
                 <p>Atenciosamente,</p>
-                <p><strong>Equipe MeideSaquá</strong></p>
+                <p><strong>Equipe ExploreSaqua</strong></p>
               `,
             };
             await tx.local.delete({ where: { localId: local.localId } });
@@ -667,15 +667,15 @@ export class AdminController {
 
         if (statusOriginal === StatusLocal.pendente_aprovacao) {
           emailInfo = {
-            subject: "Seu cadastro no MeideSaquá foi Aprovado!",
-            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá.</strong></p>`,
+            subject: "Seu cadastro no ExploreSaqua foi Aprovado!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe ExploreSaqua.</strong></p>`,
           };
         } else if (
           statusOriginal === StatusLocal.pendente_atualizacao
         ) {
           emailInfo = {
-            subject: "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
-            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá</strong></p>`,
+            subject: "Sua solicitação de atualização no ExploreSaqua foi Aprovada!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe ExploreSaqua</strong></p>`,
           };
         }
 
@@ -883,15 +883,15 @@ export class AdminController {
 
         if (statusOriginal === StatusLocal.pendente_aprovacao) {
           emailInfo = {
-            subject: "Seu cadastro no MeideSaquá foi Aprovado!",
-            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá.</strong></p>`,
+            subject: "Seu cadastro no ExploreSaqua foi Aprovado!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe ExploreSaqua.</strong></p>`,
           };
         } else if (
           statusOriginal === StatusLocal.pendente_atualizacao
         ) {
           emailInfo = {
-            subject: "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
-            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá</strong></p>`,
+            subject: "Sua solicitação de atualização no ExploreSaqua foi Aprovada!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe ExploreSaqua</strong></p>`,
           };
         }
 
@@ -1055,7 +1055,7 @@ export class AdminController {
       });
 
       res.header("Content-Type", "text/csv; charset=utf-8");
-      res.attachment("Locals_ativos_meidesaqua.csv");
+      res.attachment("locais_ativos_exploresaqua.csv");
       return res.status(200).send(csvContent);
     } catch (error) {
       console.error("Erro ao exportar Locals:", error);

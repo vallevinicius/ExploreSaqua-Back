@@ -188,7 +188,7 @@ class AuthService {
 
   public async updateUserProfile(userId: number, data: IUpdateProfileRequest) {
     const utilizador = await prisma.usuario.findUnique({ where: { usuarioId: userId } });
-    if (!utilizador) throw new Error("Utilizador não encontrado.");
+    if (!utilizador) throw new Error("Usuário não encontrado.");
 
     const update: Prisma.UsuarioUpdateInput = {};
 
@@ -204,7 +204,7 @@ class AuthService {
         where: { username: data.username },
       });
       if (usernameExists)
-        throw new Error("O novo nome de utilizador já está em uso.");
+        throw new Error("O novo nome de usuário já está em uso.");
       update.username = data.username;
     }
 
@@ -230,7 +230,7 @@ class AuthService {
     request: IUpdatePasswordRequest
   ) {
     const utilizador = await prisma.usuario.findUnique({ where: { usuarioId: userId } });
-    if (!utilizador) throw new Error("Utilizador não encontrado.");
+    if (!utilizador) throw new Error("Usuário não encontrado.");
 
     const isMatch = await bcrypt.compare(
       request.currentPassword,
@@ -248,7 +248,7 @@ class AuthService {
 
   public async deleteUser(userId: number) {
     const utilizador = await prisma.usuario.findUnique({ where: { usuarioId: userId } });
-    if (!utilizador) throw new Error("Utilizador não encontrado.");
+    if (!utilizador) throw new Error("Usuário não encontrado.");
 
     await prisma.avaliacao.deleteMany({ where: { usuarioId: utilizador.usuarioId } });
 

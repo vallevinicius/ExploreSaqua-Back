@@ -41,7 +41,7 @@ class EmailService {
   }
 
   public async sendConfirmationEmail(to: string, token: string): Promise<void> {
-    const confirmationUrl = `https://meidesaqua.saquarema.rj.gov.br/confirmar-conta?token=${token}`;
+    const confirmationUrl = `${process.env.FRONTEND_URL}/confirmar-conta?token=${token}`;
 
     const htmlContent = this.getHtmlTemplate("confirmacao", {
       LINK_CONFIRMACAO: confirmationUrl,
@@ -61,7 +61,7 @@ class EmailService {
     to: string,
     token: string,
   ): Promise<void> {
-    const resetUrl = `https://meidesaqua.saquarema.rj.gov.br/redefinir-senha?token=${token}`;
+    const resetUrl = `${process.env.FRONTEND_URL}/redefinir-senha?token=${token}`;
 
     const htmlContent = this.getHtmlTemplate("redefinir-senha", {
       LINK_REDEFINIR: resetUrl,
@@ -81,7 +81,7 @@ class EmailService {
     to: string,
     token: string,
   ): Promise<void> {
-    const confirmationUrl = `https://meidesaqua.saquarema.rj.gov.br/confirmar-novo-email?token=${token}`;
+    const confirmationUrl = `${process.env.FRONTEND_URL}/confirmar-novo-email?token=${token}`;
 
     const htmlContent = this.getHtmlTemplate("alterar-email", {
       LINK_ALTERAR_EMAIL: confirmationUrl,

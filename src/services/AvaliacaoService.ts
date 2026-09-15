@@ -89,10 +89,10 @@ class AvaliacaoService {
         const eUmaResposta = parent_id ? "uma nova resposta" : "um novo comentário";
         const notaTexto = notaFinal ? `(Nota: ${notaFinal}/5)` : "";
 
-        const subject = `[MeideSaquá] Novo Comentário no seu local: ${local.nomeLocal}`;
+        const subject = `[ExploreSaqua] Novo Comentário no seu local: ${local.nomeLocal}`;
         const html = `
           <p>Olá, ${local.nomeResponsavel || local.nomeLocal},</p>
-          <p>Seu local "<strong>${local.nomeLocal}</strong>" recebeu ${eUmaResposta} na plataforma MeideSaquá.</p>
+          <p>Seu local "<strong>${local.nomeLocal}</strong>" recebeu ${eUmaResposta} na plataforma ExploreSaqua.</p>
           <br>
           <p><strong>Usuário:</strong> ${usuario.username}</p>
           <p><strong>Comentário ${notaTexto}:</strong></p>
@@ -101,7 +101,7 @@ class AvaliacaoService {
           </blockquote>
           <br>
           <p>Acesse a plataforma para ver mais detalhes.</p>
-          <p>Atenciosamente,<br>Equipe MeideSaquá</p>
+          <p>Atenciosamente,<br>Equipe ExploreSaqua</p>
         `;
 
         await EmailService.sendGenericEmail({

@@ -5,7 +5,7 @@ class FileController {
     public async uploadFile(req: Request, res: Response): Promise<Response> {
         try {
             if (!req.file) {
-                throw new Error("Nenhum ficheiro enviado.");
+                throw new Error("Nenhum arquivo enviado.");
             }
             const url = await FileStorageService.save(req.file);
             return res.status(200).json({ url });
@@ -18,7 +18,7 @@ class FileController {
         try {
             const files = req.files as Express.Multer.File[];
             if (!files || files.length === 0) {
-                throw new Error("Nenhum ficheiro enviado.");
+                throw new Error("Nenhum arquivo enviado.");
             }
 
             const urlsPromises = files.map(file => FileStorageService.save(file));
