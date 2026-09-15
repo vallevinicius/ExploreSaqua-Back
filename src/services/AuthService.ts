@@ -10,6 +10,9 @@ import {
   IUpdateProfileRequest,
 } from "../interfaces/requests";
 import { containsEmoji } from "../utils/ValidationEmoji";
+import { requireEnv } from "../config/secrets";
+
+const JWT_SECRET = requireEnv("JWT_SECRET");
 
 class AuthService {
   public async cadastrarUsuario(dadosUsuario: any) {
@@ -18,42 +21,45 @@ class AuthService {
         "Você utilizou palavras inapropriadas no nome de usuário."
       );
     }
-    const usernameExistente = await prisma.usuario.findFirst({
-      where: { username: dadosUsuario.username, enabled: true },
-    });
     if (containsEmoji(dadosUsuario.username)) {
       throw new Error("O nome de usuário não pode conter emojis.");
     }
 
+    // Nome de usuário é público na plataforma, então é seguro (e é UX normal)
+    // informar diretamente que já está em uso.
+    const usernameExistente = await prisma.usuario.findFirst({
+      where: { username: dadosUsuario.username },
+    });
     if (usernameExistente) {
       throw new Error("Usuário já cadastrado, use outro e tente novamente.");
     }
 
+    // E-mail é diferente: nunca revelamos pela resposta HTTP se já existe uma conta
+    // com esse e-mail (evita enumeração de contas). Sempre respondemos com sucesso
+    // genérico — o que muda é qual e-mail é enviado internamente.
     const emailExistente = await prisma.usuario.findUnique({
       where: { email: dadosUsuario.email },
     });
+
     if (emailExistente) {
       if (emailExistente.enabled) {
-        throw new Error("Email já cadastrado, use outro e tente novamente.");
+        // Conta já confirmada: apenas avisa o dono do e-mail, não altera nada.
+        await EmailService.sendGenericEmail({
+          to: emailExistente.email,
+          subject: "Tentativa de cadastro no ExploreSaqua",
+          html: `<p>Alguém tentou criar uma nova conta no ExploreSaqua usando este e-mail, mas você já possui uma conta.</p><p>Se foi você, é só fazer login normalmente ou usar "Esqueci minha senha" caso não lembre a senha.</p><p>Se não foi você, pode ignorar este e-mail com segurança.</p>`,
+        });
+      } else {
+        // Conta pendente de confirmação: reenvia a confirmação para o mesmo e-mail,
+        // sem sobrescrever os dados (usuário/senha) já salvos anteriormente.
+        const novoToken = uuidv4();
+        await prisma.usuario.update({
+          where: { usuarioId: emailExistente.usuarioId },
+          data: { confirmationToken: novoToken },
+        });
+        await EmailService.sendConfirmationEmail(emailExistente.email, novoToken);
       }
-
-      await prisma.usuario.delete({ where: { usuarioId: emailExistente.usuarioId } });
-    }
-
-    const utilizadorExistente = await prisma.usuario.findFirst({
-      where: {
-        OR: [
-          { username: dadosUsuario.username },
-          { email: dadosUsuario.email },
-        ],
-      },
-    });
-
-    if (utilizadorExistente) {
-      if (utilizadorExistente.username === dadosUsuario.username)
-        throw new Error("Usuário já cadastrado, use outro e tente novamente.");
-      if (utilizadorExistente.email === dadosUsuario.email)
-        throw new Error("Email já cadastrado, use outro e tente novamente.");
+      return;
     }
 
     const senhaCriptografada = await bcrypt.hash(dadosUsuario.password, 10);
@@ -103,7 +109,7 @@ class AuthService {
 
     const token = jwt.sign(
       { id: utilizador.usuarioId, username: utilizador.username },
-      process.env.JWT_SECRET || "default_secret",
+      JWT_SECRET,
       { expiresIn: "1h" }
     );
 

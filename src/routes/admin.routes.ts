@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { AdminController } from "../controllers/AdminController";
 import { adminAuthMiddleware } from "../middlewares/adminAuth.middleware";
+import { loginRateLimiter } from "../middlewares/rateLimit.middleware";
 import multer from "multer";
 
 
@@ -44,6 +45,7 @@ const upload = multer();
  *                 message: { type: string }
  */
 router.post("/login",
+  loginRateLimiter,
   AdminController.login
 );
 

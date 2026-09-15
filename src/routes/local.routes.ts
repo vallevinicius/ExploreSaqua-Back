@@ -5,6 +5,8 @@ import path from "path";
 import LocalController from "../controllers/LocalController";
 import { compressImages } from "../middlewares/compression.middleware";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { adminAuthMiddleware } from "../middlewares/adminAuth.middleware";
+import { imageOrPdfFileFilter } from "../middlewares/fileFilter";
 
 // Define o caminho para a pasta de uploads de forma segura
 const UPLOADS_DIR = path.resolve("uploads");
@@ -34,6 +36,7 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024, // Limite de 10 MB para cada arquivo
   },
+  fileFilter: imageOrPdfFileFilter,
 });
 
 const router = Router();
@@ -318,11 +321,10 @@ router.post(
  * @swagger
  * /api/locais/{id}/status:
  *   post:
- *     summary: Ativa ou desativa um local diretamente pelo ID
- *     description: >
- *       Atenção: esta rota não exige autenticação hoje (diferente de
- *       PATCH /api/admin/local/{id}/ativo, que é a via administrativa equivalente e protegida).
+ *     summary: Ativa ou desativa um local diretamente pelo ID (via administrativa)
+ *     description: Equivalente a PATCH /api/admin/local/{id}/ativo, mantido por compatibilidade.
  *     tags: [Locais]
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: id
@@ -348,8 +350,10 @@ router.post(
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
  */
-router.post("/:id/status", LocalController.alterarStatus);
+router.post("/:id/status", adminAuthMiddleware, LocalController.alterarStatus);
 
 /**
  * @swagger

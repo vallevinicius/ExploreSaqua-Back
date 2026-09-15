@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import AuthController from '../controllers/AuthController';
+import { loginRateLimiter } from '../middlewares/rateLimit.middleware';
 
 const router = Router();
 
@@ -72,6 +73,7 @@ router.post('/cadastro',
  *             schema: { $ref: '#/components/schemas/ErrorResponse' }
  */
 router.post('/login',
+    loginRateLimiter,
     AuthController.login
 );
 

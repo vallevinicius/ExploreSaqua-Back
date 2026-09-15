@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { requireEnv } from '../config/secrets';
 
 
 interface AuthenticatedRequest extends Request {
@@ -9,7 +10,8 @@ interface AuthenticatedRequest extends Request {
     }
 }
 
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'seu-segredo-admin-super-secreto';
+const JWT_SECRET = requireEnv('JWT_SECRET');
+const ADMIN_JWT_SECRET = requireEnv('ADMIN_JWT_SECRET');
 
 export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     const authHeader = req.headers.authorization;
@@ -18,14 +20,14 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
         return res.status(401).json({ message: 'Acesso negado. Token não fornecido.' });
     }
 
-    const token = authHeader.substring(7); 
+    const token = authHeader.substring(7);
 
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: number; username: string };
-        
+        const decoded = jwt.verify(token, JWT_SECRET) as { id: number; username: string };
+
         req.user = decoded;
-        
-        next(); 
+
+        next();
     } catch (error) {
         return res.status(401).json({ message: 'Token inválido ou expirado.' });
     }
@@ -41,7 +43,7 @@ export function authOrAdminMiddleware(req: AuthenticatedRequest, res: Response, 
     const token = authHeader.substring(7);
 
     try {
-        const decodedUser = jwt.verify(token, process.env.JWT_SECRET as string) as { id: number; username: string };
+        const decodedUser = jwt.verify(token, JWT_SECRET) as { id: number; username: string };
         req.user = decodedUser;
         return next();
     } catch (error) {

@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import * as jwt from "jsonwebtoken";
+import { requireEnv } from "../config/secrets";
 
-const JWT_SECRET = process.env.ADMIN_JWT_SECRET || "seu-segredo-admin-super-secreto";
+const JWT_SECRET = requireEnv("ADMIN_JWT_SECRET");
 
 export const adminAuthMiddleware = (
   req: Request,

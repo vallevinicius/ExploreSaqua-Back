@@ -3,6 +3,8 @@ import multer from "multer";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import FileController from "../controllers/FileController";
+import { authMiddleware } from "../middlewares/auth.middleware";
+import { imageOrPdfFileFilter } from "../middlewares/fileFilter";
 
 const router = Router();
 
@@ -21,6 +23,7 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024, // Limite de 10 MB para cada arquivo
   },
+  fileFilter: imageOrPdfFileFilter,
 });
 
 /**
@@ -28,11 +31,8 @@ const upload = multer({
  * /api/files/upload:
  *   post:
  *     summary: Envia um único arquivo e retorna sua URL pública
- *     description: >
- *       Atenção: esta rota não exige autenticação nem valida o tipo do arquivo hoje —
- *       qualquer visitante pode enviar qualquer tipo de arquivo, que fica publicamente
- *       acessível em /uploads.
  *     tags: [Arquivos]
+ *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
@@ -41,7 +41,7 @@ const upload = multer({
  *             type: object
  *             required: [file]
  *             properties:
- *               file: { type: string, format: binary }
+ *               file: { type: string, format: binary, description: "Imagem (JPEG/PNG/WEBP/GIF) ou PDF, até 10MB." }
  *     responses:
  *       200:
  *         description: Upload concluído.
@@ -52,21 +52,22 @@ const upload = multer({
  *               properties:
  *                 url: { type: string, example: "uploads/1699999999-abc123.webp" }
  *       400:
- *         description: Nenhum arquivo enviado.
+ *         description: Nenhum arquivo enviado, ou tipo de arquivo não permitido.
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
  */
-router.post("/upload", upload.single("file"), FileController.uploadFile);
+router.post("/upload", authMiddleware, upload.single("file"), FileController.uploadFile);
 
 /**
  * @swagger
  * /api/files/upload-multiple:
  *   post:
  *     summary: Envia múltiplos arquivos de uma vez e retorna suas URLs
- *     description: >
- *       Mesma observação de segurança do /upload — sem autenticação nem validação de tipo hoje.
  *     tags: [Arquivos]
+ *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
@@ -90,13 +91,16 @@ router.post("/upload", upload.single("file"), FileController.uploadFile);
  *                   type: array
  *                   items: { type: string }
  *       400:
- *         description: Nenhum arquivo enviado.
+ *         description: Nenhum arquivo enviado, ou tipo de arquivo não permitido.
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
  */
 router.post(
   "/upload-multiple",
+  authMiddleware,
   upload.array("files"),
   FileController.uploadMultipleFiles
 );

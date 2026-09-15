@@ -5,6 +5,7 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { compressImages } from '../middlewares/compression.middleware';
+import { imageOrPdfFileFilter } from '../middlewares/fileFilter';
 import { haversineDistanceMeters } from '../utils/geo';
 
 const MAX_VISIT_DISTANCE_METERS = 500;
@@ -30,6 +31,7 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024,
   },
+  fileFilter: imageOrPdfFileFilter,
 });
 
 const router = Router();
