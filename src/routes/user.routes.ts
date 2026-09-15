@@ -1,8 +1,6 @@
 import { Router } from 'express';
 import UserController from '../controllers/UserController';
-import Usuario from '../entities/Usuario.entity';
-import Local from '../entities/Local.entity';
-import UsuarioLocal from '../entities/UsuarioLocal.entity';
+import prisma from '../prisma';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
@@ -33,21 +31,196 @@ const upload = multer({
 
 const router = Router();
 
-router.post('/profile', 
+/**
+ * @swagger
+ * /api/users/profile:
+ *   post:
+ *     summary: Atualiza nome, username e/ou e-mail do usuário logado
+ *     description: Ao trocar o e-mail, um link de confirmação é enviado para o novo endereço antes de ele passar a valer.
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               nomeCompleto: { type: string }
+ *               username: { type: string }
+ *               email: { type: string, format: email }
+ *     responses:
+ *       200:
+ *         description: Perfil atualizado.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Usuario' }
+ *       400:
+ *         description: Username/e-mail em uso ou conteúdo inválido.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ *   delete:
+ *     summary: Exclui a conta do usuário logado (e suas avaliações)
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Conta excluída.
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ */
+router.post('/profile',
     UserController.updateUserProfile
 );
+
+/**
+ * @swagger
+ * /api/users/profile/estabelecimentos:
+ *   get:
+ *     summary: Lista os estabelecimentos (locais) cadastrados pelo usuário logado
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: usuarioId
+ *         schema: { type: integer }
+ *         description: Somente para chamadas feitas com token de admin — filtra por outro usuário.
+ *     responses:
+ *       200:
+ *         description: Lista de estabelecimentos.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 total: { type: integer }
+ *                 locais:
+ *                   type: array
+ *                   items: { $ref: '#/components/schemas/Local' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ */
 router.get('/profile/estabelecimentos',
   UserController.listarMeusEstabelecimentos
 );
+
+/**
+ * @swagger
+ * /api/users/profile/comentarios:
+ *   get:
+ *     summary: Lista os comentários feitos pelo usuário logado
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Lista de comentários.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 total: { type: integer }
+ *                 comentarios:
+ *                   type: array
+ *                   items: { $ref: '#/components/schemas/Avaliacao' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ */
 router.get('/profile/comentarios',
   UserController.listarMeusComentarios
 );
+
+/**
+ * @swagger
+ * /api/users/profile/avaliacoes:
+ *   get:
+ *     summary: Lista as avaliações feitas pelo usuário logado
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Lista de avaliações.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 total: { type: integer }
+ *                 avaliacoes:
+ *                   type: array
+ *                   items: { $ref: '#/components/schemas/Avaliacao' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ */
 router.get('/profile/avaliacoes',
   UserController.listarMinhasAvaliacoes
 );
+
+/**
+ * @swagger
+ * /api/users/profile/reviews:
+ *   get:
+ *     summary: Alias de /api/users/profile/avaliacoes
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Lista de avaliações.
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ */
 router.get('/profile/reviews',
   UserController.listarMeusReviews
 );
+
+/**
+ * @swagger
+ * /api/users/profile/estabelecimentos/{localId}:
+ *   put:
+ *     summary: Atualiza um estabelecimento que pertence ao usuário logado
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: localId
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               nomeLocal: { type: string }
+ *               categoria: { type: string }
+ *               descricao: { type: string }
+ *               endereco: { type: string }
+ *               instagram: { type: string }
+ *               contatoLocal: { type: string }
+ *               logo: { type: string, format: binary }
+ *               imagens: { type: array, items: { type: string, format: binary } }
+ *     responses:
+ *       200:
+ *         description: Estabelecimento atualizado.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message: { type: string }
+ *                 local: { $ref: '#/components/schemas/Local' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ *       403:
+ *         description: O usuário logado não é dono deste estabelecimento.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       404:
+ *         $ref: '#/components/responses/NaoEncontrado'
+ */
 router.put('/profile/estabelecimentos/:localId',
     upload.fields([
         { name: "logo", maxCount: 1 },
@@ -61,14 +234,88 @@ router.put('/profile/estabelecimentos/:localId',
   compressImages,
     UserController.atualizarMeuEstabelecimento
 );
-router.delete('/profile', 
+router.delete('/profile',
     UserController.deleteUserProfile
 );
-router.put('/password', 
+
+/**
+ * @swagger
+ * /api/users/password:
+ *   put:
+ *     summary: Altera a senha do usuário logado (exige a senha atual)
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [currentPassword, newPassword]
+ *             properties:
+ *               currentPassword: { type: string, format: password }
+ *               newPassword: { type: string, format: password }
+ *     responses:
+ *       200:
+ *         description: Senha alterada com sucesso.
+ *       400:
+ *         description: Senha atual incorreta.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       401:
+ *         $ref: '#/components/responses/NaoAutorizado'
+ */
+router.put('/password',
     UserController.updateUserPassword
 );
 
-// Rota para marcar que o usuário visitou um local
+/**
+ * @swagger
+ * /api/users/{userId}/visits:
+ *   post:
+ *     summary: Marca que o usuário logado visitou um local
+ *     tags: [Perfil]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema: { type: integer }
+ *         description: Precisa ser o mesmo ID do usuário autenticado.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [localId]
+ *             properties:
+ *               localId: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Visita registrada (nova ou atualizada).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message: { type: string }
+ *                 visited: { type: boolean }
+ *                 created: { type: boolean, description: "true se era a primeira visita a este local." }
+ *       400:
+ *         description: Parâmetros inválidos.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       403:
+ *         description: O ID na URL não é o do usuário autenticado.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       404:
+ *         $ref: '#/components/responses/NaoEncontrado'
+ */
 router.post('/:userId/visits', async (req, res) => {
   try {
     const userId = Number(req.params.userId);
@@ -85,25 +332,32 @@ router.post('/:userId/visits', async (req, res) => {
     }
 
     // Verifica existência do usuário
-    const user = await Usuario.findByPk(userId);
+    const user = await prisma.usuario.findUnique({ where: { usuarioId: userId } });
     if (!user) return res.status(404).json({ message: 'Usuário não encontrado' });
 
     // Verifica existência do local
-    const local = await Local.findByPk(Number(localId));
+    const local = await prisma.local.findUnique({ where: { localId: Number(localId) } });
     if (!local) return res.status(404).json({ message: 'Local não encontrado' });
 
     // Cria ou atualiza registro de visita
-    const [record, created] = await UsuarioLocal.findOrCreate({
+    const existing = await prisma.usuarioLocal.findFirst({
       where: { usuarioId: userId, localId: Number(localId) },
-      defaults: { usuarioId: userId, localId: Number(localId) },
     });
 
-    if (!created) {
-      record.set('visitedAt', new Date());
-      await record.save();
+    let created = false;
+    if (existing) {
+      await prisma.usuarioLocal.update({
+        where: { id: existing.id },
+        data: { visitedAt: new Date() },
+      });
+    } else {
+      await prisma.usuarioLocal.create({
+        data: { usuarioId: userId, localId: Number(localId) },
+      });
+      created = true;
     }
 
-    return res.status(200).json({ message: 'Visita registrada', visited: true, created: !!created });
+    return res.status(200).json({ message: 'Visita registrada', visited: true, created });
   } catch (error: any) {
     console.error('Erro ao registrar visita via rota:', error);
     return res.status(500).json({ message: 'Erro interno do servidor' });

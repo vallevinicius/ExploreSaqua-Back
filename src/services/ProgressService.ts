@@ -1,6 +1,5 @@
-import Local, { StatusLocal } from '../entities/Local.entity';
-import Usuario from '../entities/Usuario.entity';
-import UsuarioLocal from '../entities/UsuarioLocal.entity';
+import prisma from '../prisma';
+import { StatusLocal } from '@prisma/client';
 
 class ProgressService {
   private static determineTag(percentage: number): string {
@@ -24,16 +23,21 @@ class ProgressService {
 
   public static async getUserProgress(userId: number) {
     // Verificar se usuário existe
-    const user = await Usuario.findByPk(userId);
+    const user = await prisma.usuario.findUnique({ where: { usuarioId: userId } });
     if (!user) {
       return { status: 404, body: { message: 'Usuário não encontrado' } };
     }
 
     // Contar locais ativos no sistema (status = ATIVO)
-    const totalLocations = await Local.count({ where: { status: StatusLocal.ATIVO } });
+    const totalLocations = await prisma.local.count({ where: { status: StatusLocal.ativo } });
 
     // Contar locais visitados pelo usuário (contagem distinta de localId)
-    const visitedCount = await UsuarioLocal.count({ where: { usuarioId: userId }, distinct: true, col: 'localId' });
+    const visitedRows = await prisma.usuarioLocal.findMany({
+      where: { usuarioId: userId },
+      distinct: ['localId'],
+      select: { localId: true },
+    });
+    const visitedCount = visitedRows.length;
 
     // Tratar divisão por zero
     if (totalLocations === 0) {

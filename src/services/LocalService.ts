@@ -1,9 +1,5 @@
-import { Op } from "sequelize";
-import sequelize from "../config/database";
-import Local, { StatusLocal } from "../entities/Local.entity";
-import ImagemLocal from "../entities/ImagemLocal.entity";
-import Avaliacao from "../entities/Avaliacao.entity";
-import Usuario from "../entities/Usuario.entity";
+import prisma from "../prisma";
+import { Local, StatusLocal } from "@prisma/client";
 import ProfanityFilter from "../utils/ProfanityFilter";
 
 const normalizeString = (value: any): string | undefined => {
@@ -37,29 +33,32 @@ const parseOptionalNumber = (value: any): number | null => {
 };
 
 class LocalService {
-public async cadastrarLocalComImagens(dados: any): Promise<Local> {
-    const transaction = await sequelize.transaction();
-    try {
+  public async cadastrarLocalComImagens(dados: any): Promise<Local> {
+    return prisma.$transaction(async (tx) => {
       const usuarioId = dados.usuarioId ? Number(dados.usuarioId) : null;
-      let usuarioPerfil: Usuario | null = null;
-      let ultimoLocalDoUsuario: Local | null = null;
+      let usuarioPerfil: { email: string; nomeCompleto: string; username: string } | null = null;
+      let ultimoLocalDoUsuario: {
+        nomeResponsavel: string;
+        cpfResponsavel: string;
+        emailResponsavel: string;
+        contatoResponsavel: string;
+      } | null = null;
 
       if (usuarioId) {
-        usuarioPerfil = await Usuario.findByPk(usuarioId, {
-          attributes: ["email", "nomeCompleto", "username"],
-          transaction,
+        usuarioPerfil = await tx.usuario.findUnique({
+          where: { usuarioId },
+          select: { email: true, nomeCompleto: true, username: true },
         });
 
-        ultimoLocalDoUsuario = await Local.findOne({
+        ultimoLocalDoUsuario = await tx.local.findFirst({
           where: { usuarioId },
-          order: [["localId", "DESC"]],
-          attributes: [
-            "nomeResponsavel",
-            "cpfResponsavel",
-            "emailResponsavel",
-            "contatoResponsavel",
-          ],
-          transaction,
+          orderBy: { localId: "desc" },
+          select: {
+            nomeResponsavel: true,
+            cpfResponsavel: true,
+            emailResponsavel: true,
+            contatoResponsavel: true,
+          },
         });
       }
 
@@ -67,36 +66,35 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
         normalizeString(dados.emailResponsavel) ?? normalizeString(dados.emailContato);
 
       if (!emailResponsavel && ultimoLocalDoUsuario) {
-        emailResponsavel = normalizeString((ultimoLocalDoUsuario as any)?.emailResponsavel);
+        emailResponsavel = normalizeString(ultimoLocalDoUsuario.emailResponsavel);
       }
 
       // Fallback para fluxo de perfil: se o e-mail não vier no form,
       // usa o e-mail da conta autenticada associada ao usuarioId.
       if (!emailResponsavel && usuarioPerfil) {
-        emailResponsavel = normalizeString((usuarioPerfil as any)?.email);
+        emailResponsavel = normalizeString(usuarioPerfil.email);
       }
 
       let nomeResponsavel = normalizeString(dados.nomeResponsavel);
 
       if (!nomeResponsavel && ultimoLocalDoUsuario) {
-        nomeResponsavel = normalizeString((ultimoLocalDoUsuario as any)?.nomeResponsavel);
+        nomeResponsavel = normalizeString(ultimoLocalDoUsuario.nomeResponsavel);
       }
 
       // Fallback para fluxo de perfil: usa nome completo (ou username) do usuário logado.
       if (!nomeResponsavel && usuarioPerfil) {
         nomeResponsavel =
-          normalizeString((usuarioPerfil as any)?.nomeCompleto) ??
-          normalizeString((usuarioPerfil as any)?.username);
+          normalizeString(usuarioPerfil.nomeCompleto) ?? normalizeString(usuarioPerfil.username);
       }
 
       let cpfResponsavel = normalizeString(dados.cpfResponsavel);
       if (!cpfResponsavel && ultimoLocalDoUsuario) {
-        cpfResponsavel = normalizeString((ultimoLocalDoUsuario as any)?.cpfResponsavel);
+        cpfResponsavel = normalizeString(ultimoLocalDoUsuario.cpfResponsavel);
       }
 
       let contatoResponsavel = normalizeString(dados.contatoResponsavel);
       if (!contatoResponsavel && ultimoLocalDoUsuario) {
-        contatoResponsavel = normalizeString((ultimoLocalDoUsuario as any)?.contatoResponsavel);
+        contatoResponsavel = normalizeString(ultimoLocalDoUsuario.contatoResponsavel);
       }
 
       if (!emailResponsavel) {
@@ -133,7 +131,7 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
         alvaraFuncionamentoUrl: normalizeString(dados.alvaraFuncionamentoUrl),
         alvaraVigilanciaUrl: normalizeString(dados.alvaraVigilanciaUrl),
         ativo: false,
-        status: StatusLocal.PENDENTE_APROVACAO,
+        status: StatusLocal.pendente_aprovacao,
 
         // Campos opcionais para indicar que este cadastro é uma indicação
         tipoCadastro: normalizeString(dados.tipoCadastro),
@@ -152,10 +150,10 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
       }
 
       // Verifica se já existe um local com o mesmo nome e status diferente de REJEITADO
-      const localExistente = await Local.findOne({
+      const localExistente = await tx.local.findFirst({
         where: {
           nomeLocal: dadosParaCriacao.nomeLocal,
-          status: { [Op.ne]: StatusLocal.REJEITADO },
+          status: { not: StatusLocal.rejeitado },
         },
       });
 
@@ -163,7 +161,7 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
         throw new Error("Já existe um local cadastrado com esse nome.");
       }
 
-      const local = await Local.create(dadosParaCriacao, { transaction });
+      const local = await tx.local.create({ data: dadosParaCriacao });
 
       const imagensInput = Array.isArray(dados.imagens)
         ? dados.imagens
@@ -175,34 +173,23 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
 
       // Galeria de imagens
       if (imagensInput.length > 0) {
-        const imagens = imagensInput.map((url: string) => ({
-          url,
-          localId: local.localId,
-        }));
-        await ImagemLocal.bulkCreate(imagens, { transaction });
+        await tx.imagemLocal.createMany({
+          data: imagensInput.map((url: string) => ({ url, localId: local.localId })),
+        });
       }
 
-      await transaction.commit();
       return local;
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
-    }
+    });
   }
 
-  public async solicitarAtualizacao(
-    id: number,
-    dadosAtualizacao: any,
-  ): Promise<Local> {
-    const local = await Local.findByPk(id);
+  public async solicitarAtualizacao(id: number, dadosAtualizacao: any): Promise<Local> {
+    const local = await prisma.local.findUnique({ where: { localId: id } });
 
     if (!local) {
       throw new Error("Local não encontrado.");
     }
 
-    const usuarioId = dadosAtualizacao?.usuarioId
-      ? Number(dadosAtualizacao.usuarioId)
-      : null;
+    const usuarioId = dadosAtualizacao?.usuarioId ? Number(dadosAtualizacao.usuarioId) : null;
 
     if (usuarioId && local.usuarioId && Number(local.usuarioId) !== usuarioId) {
       throw new Error("Você não tem permissão para atualizar este local.");
@@ -214,10 +201,11 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
       normalizeString(local.emailResponsavel);
 
     if (!emailResponsavel && usuarioId) {
-      const usuarioPerfil = await Usuario.findByPk(usuarioId, {
-        attributes: ["email"],
+      const usuarioPerfil = await prisma.usuario.findUnique({
+        where: { usuarioId },
+        select: { email: true },
       });
-      emailResponsavel = normalizeString((usuarioPerfil as any)?.email);
+      emailResponsavel = normalizeString(usuarioPerfil?.email);
     }
 
     const imagensAtualizacao = Array.isArray(dadosAtualizacao.imagens)
@@ -232,16 +220,11 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
       ...dadosAtualizacao,
       nomeLocal: normalizeString(dadosAtualizacao.nomeLocal),
       categoria: normalizeString(dadosAtualizacao.categoria),
-      nomeResponsavel:
-        normalizeString(dadosAtualizacao.nomeResponsavel) ??
-        normalizeString(local.nomeResponsavel),
-      cpfResponsavel:
-        normalizeString(dadosAtualizacao.cpfResponsavel) ??
-        normalizeString(local.cpfResponsavel),
+      nomeResponsavel: normalizeString(dadosAtualizacao.nomeResponsavel) ?? normalizeString(local.nomeResponsavel),
+      cpfResponsavel: normalizeString(dadosAtualizacao.cpfResponsavel) ?? normalizeString(local.cpfResponsavel),
       emailResponsavel,
       contatoResponsavel:
-        normalizeString(dadosAtualizacao.contatoResponsavel) ??
-        normalizeString(local.contatoResponsavel),
+        normalizeString(dadosAtualizacao.contatoResponsavel) ?? normalizeString(local.contatoResponsavel),
       contatoLocal: normalizeString(dadosAtualizacao.contatoLocal),
       endereco: normalizeString(dadosAtualizacao.endereco),
       descricao: normalizeString(dadosAtualizacao.descricao),
@@ -256,83 +239,70 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
         : undefined,
     };
 
-    local.status = StatusLocal.PENDENTE_ATUALIZACAO;
-    local.dados_atualizacao = atualizacaoLimpa;
-    await local.save();
-
-    return local;
+    return prisma.local.update({
+      where: { localId: id },
+      data: {
+        status: StatusLocal.pendente_atualizacao,
+        dadosAtualizacao: atualizacaoLimpa,
+      },
+    });
   }
 
-  public async solicitarExclusao(
-    id: number,
-    dadosExclusao: any,
-  ): Promise<void> {
-    const local = await Local.findByPk(id);
+  public async solicitarExclusao(id: number, dadosExclusao: any): Promise<void> {
+    const local = await prisma.local.findUnique({ where: { localId: id } });
 
     if (!local) {
       throw new Error("Local não encontrado.");
     }
 
-    local.status = StatusLocal.PENDENTE_EXCLUSAO;
-    local.dados_atualizacao = dadosExclusao;
-    await local.save();
+    await prisma.local.update({
+      where: { localId: id },
+      data: {
+        status: StatusLocal.pendente_exclusao,
+        dadosAtualizacao: dadosExclusao,
+      },
+    });
   }
 
   public async listarTodos(): Promise<Local[]> {
-    return Local.findAll({
-      where: {
-        status: StatusLocal.ATIVO,
+    return prisma.local.findMany({
+      where: { status: StatusLocal.ativo },
+      include: {
+        locaisImg: { select: { url: true } },
       },
-      include: [
-        {
-          model: ImagemLocal,
-          as: "locaisImg",
-          attributes: ["url"],
-        },
-      ],
     });
   }
 
   public async buscarPorCategoria(categoria: string): Promise<Local[]> {
-    return Local.findAll({
+    return prisma.local.findMany({
       where: {
-        categoria: { [Op.like]: `%${categoria}%` },
-        status: StatusLocal.ATIVO,
+        categoria: { contains: categoria },
+        status: StatusLocal.ativo,
       },
-      include: [
-        {
-          model: ImagemLocal,
-          as: "locaisImg",
-          attributes: ["url"],
-        },
-      ],
+      include: {
+        locaisImg: { select: { url: true } },
+      },
     });
   }
 
   public async buscarPorNome(nome: string): Promise<Local[]> {
-    return Local.findAll({
+    return prisma.local.findMany({
       where: {
-        nomeLocal: {
-          [Op.like]: `%${nome}%`,
-        },
-        status: StatusLocal.ATIVO,
+        nomeLocal: { contains: nome },
+        status: StatusLocal.ativo,
       },
-      include: [
-        {
-          model: ImagemLocal,
-          as: "locaisImg",
-          attributes: ["url"],
-        },
-      ],
+      include: {
+        locaisImg: { select: { url: true } },
+      },
     });
   }
 
   public async buscarPorId(id: number): Promise<Local | null> {
     try {
-      const local = await Local.findOne({
+      const local = await prisma.local.findFirst({
         where: {
           localId: id,
-          status: StatusLocal.ATIVO,
+          status: StatusLocal.ativo,
         },
       });
 
@@ -340,63 +310,43 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
         return null;
       }
 
-      const imagens = await ImagemLocal.findAll({
+      const imagens = await prisma.imagemLocal.findMany({
         where: { localId: local.localId },
-        attributes: ["url"],
+        select: { url: true },
       });
 
-      const avaliacoes = await Avaliacao.findAll({
+      const avaliacoes = await prisma.avaliacao.findMany({
         where: {
           localId: local.localId,
-          parent_id: null,
+          parentId: null,
         },
-        include: [
-          {
-            model: Usuario,
-            as: "usuario",
-            attributes: ["nomeCompleto", "usuarioId", "username"],
+        include: {
+          usuario: { select: { nomeCompleto: true, usuarioId: true, username: true } },
+          respostas: {
+            include: {
+              usuario: { select: { nomeCompleto: true, usuarioId: true, username: true } },
+            },
+            orderBy: { avaliacoesId: "asc" },
           },
-          {
-            model: Avaliacao,
-            as: "respostas",
-            required: false,
-            include: [
-              {
-                model: Usuario,
-                as: "usuario",
-                attributes: ["nomeCompleto", "usuarioId", "username"],
-              },
-            ],
-          },
-        ],
-        order: [
-          ["avaliacoesId", "DESC"],
-          [{ model: Avaliacao, as: "respostas" }, "avaliacoesId", "ASC"],
-        ],
+        },
+        orderBy: { avaliacoesId: "desc" },
       });
 
-      const localJSON = local.toJSON();
-      (localJSON as any).locaisImg = imagens;
-      (localJSON as any).avaliacoes = avaliacoes;
+      const localJSON: any = { ...local };
+      localJSON.locaisImg = imagens;
+      localJSON.avaliacoes = avaliacoes;
 
       if (avaliacoes && avaliacoes.length > 0) {
-        const notasPrincipais = avaliacoes
-          .map((a) => a.nota)
-          .filter((n) => n !== null) as number[];
+        const notasPrincipais = avaliacoes.map((a) => a.nota).filter((n) => n !== null) as number[];
 
         if (notasPrincipais.length > 0) {
-          const somaDasNotas = notasPrincipais.reduce(
-            (acc, nota) => acc + nota,
-            0,
-          );
-          (localJSON as any).media = parseFloat(
-            (somaDasNotas / notasPrincipais.length).toFixed(1),
-          );
+          const somaDasNotas = notasPrincipais.reduce((acc, nota) => acc + nota, 0);
+          localJSON.media = parseFloat((somaDasNotas / notasPrincipais.length).toFixed(1));
         } else {
-          (localJSON as any).media = 0;
+          localJSON.media = 0;
         }
       } else {
-        (localJSON as any).media = 0;
+        localJSON.media = 0;
       }
 
       return localJSON as Local;
@@ -407,21 +357,18 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
   }
 
   public async alterarStatusAtivo(id: number, ativo: boolean): Promise<Local> {
-    const local = await Local.findByPk(id);
+    const local = await prisma.local.findUnique({ where: { localId: id } });
     if (!local) {
       throw new Error("Local não encontrado.");
     }
-    local.ativo = ativo;
 
-    if (ativo === false) {
-      // quando admin desativa manualmente, marque como INATIVO (não REJEITADO)
-      local.status = StatusLocal.INATIVO;
-    } else {
-      local.status = StatusLocal.ATIVO;
-    }
+    // quando admin desativa manualmente, marque como INATIVO (não REJEITADO)
+    const status = ativo === false ? StatusLocal.inativo : StatusLocal.ativo;
 
-    await local.save();
-    return local;
+    return prisma.local.update({
+      where: { localId: id },
+      data: { ativo, status },
+    });
   }
 
   public async listarPendentes(): Promise<{
@@ -429,46 +376,34 @@ public async cadastrarLocalComImagens(dados: any): Promise<Local> {
     atualizacoes: Local[];
     exclusoes: Local[];
   }> {
-    const commonOptions = {
-      include: [
-        {
-          model: ImagemLocal,
-          as: "locaisImg",
-          attributes: ["url"],
-        },
-      ],
-    };
+    const include = {
+      locaisImg: { select: { url: true } },
+    } as const;
 
-    const cadastros = await Local.findAll({
-      where: { status: StatusLocal.PENDENTE_APROVACAO },
-      ...commonOptions,
+    const cadastros = await prisma.local.findMany({
+      where: { status: StatusLocal.pendente_aprovacao },
+      include,
     });
 
-    const atualizacoes = await Local.findAll({
-      where: { status: StatusLocal.PENDENTE_ATUALIZACAO },
-      ...commonOptions,
+    const atualizacoes = await prisma.local.findMany({
+      where: { status: StatusLocal.pendente_atualizacao },
+      include,
     });
 
-    const exclusoes = await Local.findAll({
-      where: { status: StatusLocal.PENDENTE_EXCLUSAO },
-      ...commonOptions,
+    const exclusoes = await prisma.local.findMany({
+      where: { status: StatusLocal.pendente_exclusao },
+      include,
     });
 
     return { cadastros, atualizacoes, exclusoes };
   }
 
   public async listarInativos(): Promise<Local[]> {
-    return Local.findAll({
-      where: {
-        status: StatusLocal.INATIVO,
+    return prisma.local.findMany({
+      where: { status: StatusLocal.inativo },
+      include: {
+        locaisImg: { select: { url: true } },
       },
-      include: [
-        {
-          model: ImagemLocal,
-          as: "locaisImg",
-          attributes: ["url"],
-        },
-      ],
     });
   }
 }

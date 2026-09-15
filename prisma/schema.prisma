@@ -7,107 +7,125 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model avaliacoes {
-  avaliacoes_id    Int          @id @default(autoincrement())
-  comentario       String?      @db.Text
-  nota             Float?
-  usuario_id       Int?
-  local_id         Int?
-  parent_id        Int?
-  usuarios         usuarios?    @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, map: "avaliacoes_ibfk_133")
-  locais           locais?      @relation(fields: [local_id], references: [local_id], onDelete: Cascade, map: "avaliacoes_ibfk_134")
-  avaliacoes       avaliacoes?  @relation("avaliacoesToavaliacoes", fields: [parent_id], references: [avaliacoes_id], onDelete: Cascade, map: "avaliacoes_ibfk_135")
-  other_avaliacoes avaliacoes[] @relation("avaliacoesToavaliacoes")
-
-  @@index([local_id], map: "local_id")
-  @@index([parent_id], map: "parent_id")
-  @@index([usuario_id], map: "usuario_id")
-}
-
-model contador_visualizacoes {
-  id            Int    @id @default(autoincrement())
-  identificador String @db.VarChar(255)
-  visualizacoes Int    @default(0)
-}
-
-model imagens_local {
-  id       Int     @id @default(autoincrement())
-  url      String? @db.Text
-  local_id Int?
-  locais   locais? @relation(fields: [local_id], references: [local_id], onDelete: Cascade, map: "imagens_local_ibfk_1")
-
-  @@index([local_id], map: "local_id")
-}
-
-model locais {
-  local_id                 Int              @id @default(autoincrement())
-  usuario_id               Int?
-  logoUrl                  String?          @db.Text
-  tipo_cadastro            String?          @db.VarChar(255)
-  indicador_nome           String?          @db.VarChar(255)
-  indicador_contato        String?          @db.VarChar(255)
-  indicador_email          String?          @db.VarChar(255)
-  email_responsavel        String           @db.VarChar(255)
-  contato_responsavel      String           @db.VarChar(255)
-  alvara_funcionamento_url String?          @db.Text
-  alvara_vigilancia_url    String?          @db.Text
-  categoria                String?          @db.VarChar(255)
-  nome_responsavel         String           @db.VarChar(255)
-  cpf_responsavel          String           @db.VarChar(14)
-  contato_local            String?          @db.VarChar(255)
-  nome_local               String?          @db.VarChar(255)
-  endereco                 String?          @db.VarChar(255)
-  descricao                String?          @db.Text
-  instagram                String?          @db.VarChar(255)
-  status                   locais_status    @default(pendente_aprovacao)
-  dados_atualizacao        Json?
-  latitude                 Float?           @db.Float
-  longitude                Float?           @db.Float
-  createdAt                DateTime         @db.DateTime(0)
-  updatedAt                DateTime         @db.DateTime(0)
-  ativo                    Boolean?         @default(false)
-  avaliacoes               avaliacoes[]
-  imagens_local            imagens_local[]
-  usuarios                 usuarios?        @relation(fields: [usuario_id], references: [usuario_id], onDelete: SetNull, map: "locais_ibfk_usuario")
-  usuario_locais           usuario_locais[]
-
-  @@index([usuario_id], map: "usuario_id")
-}
-
-model usuarios {
-  usuario_id                  Int              @id @default(autoincrement())
-  nome_completo_user          String           @db.VarChar(255)
-  username                    String           @db.VarChar(255)
-  email                       String           @db.VarChar(255)
-  password                    String           @db.VarChar(255)
-  enabled                     Boolean?         @default(false)
-  confirmation_token          String?          @db.VarChar(255)
-  reset_password_token        String?          @db.VarChar(255)
-  reset_password_token_expiry DateTime?        @db.DateTime(0)
-  unconfirmed_email           String?          @db.VarChar(255)
-  email_change_token          String?          @db.VarChar(255)
-  avaliacoes                  avaliacoes[]
-  locais                      locais[]
-  usuario_locais              usuario_locais[]
-}
-
-model usuario_locais {
-  id         Int      @id @default(autoincrement())
-  usuario_id Int
-  local_id   Int
-  visited_at DateTime @db.DateTime(0)
-  usuarios   usuarios @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, map: "usuario_locais_ibfk_21")
-  locais     locais   @relation(fields: [local_id], references: [local_id], onDelete: Cascade, map: "usuario_locais_ibfk_22")
-
-  @@unique([usuario_id, local_id], map: "usuario_locais_localId_usuarioId_unique")
-  @@index([local_id], map: "local_id")
-}
-
-enum locais_status {
+// Nomes dos membros ficam em minúsculo (iguais ao valor gravado no banco) de propósito:
+// o Prisma Client serializa o NOME do membro (não o valor mapeado) em JSON, e o frontend
+// compara `local.status === "ativo"` diretamente nas respostas da API.
+enum StatusLocal {
   pendente_aprovacao
   ativo
   inativo
   pendente_atualizacao
   pendente_exclusao
   rejeitado
+}
+
+model Usuario {
+  usuarioId                Int       @id @default(autoincrement()) @map("usuario_id")
+  nomeCompleto             String    @map("nome_completo_user") @db.VarChar(255)
+  username                 String    @unique(map: "username") @db.VarChar(255)
+  email                    String    @unique(map: "email") @db.VarChar(255)
+  password                 String    @db.VarChar(255)
+  enabled                  Boolean?  @default(false)
+  confirmationToken        String?   @map("confirmation_token") @db.VarChar(255)
+  resetPasswordToken       String?   @map("reset_password_token") @db.VarChar(255)
+  resetPasswordTokenExpiry DateTime? @map("reset_password_token_expiry") @db.DateTime(0)
+  unconfirmedEmail         String?   @map("unconfirmed_email") @db.VarChar(255)
+  emailChangeToken         String?   @map("email_change_token") @db.VarChar(255)
+  progressPercentage       Decimal   @default(0.00) @map("progress_percentage") @db.Decimal(5, 2)
+  currentTag               String    @default("Iniciante") @map("current_tag") @db.VarChar(255)
+
+  avaliacoes        Avaliacao[]
+  locaisCadastrados Local[]        @relation("LocalDono")
+  usuarioLocais     UsuarioLocal[]
+
+  @@map("usuarios")
+}
+
+model Local {
+  localId                Int         @id @default(autoincrement()) @map("local_id")
+  logoUrl                String?     @db.Text
+  emailResponsavel       String      @map("email_responsavel") @db.VarChar(255)
+  contatoResponsavel     String      @map("contato_responsavel") @db.VarChar(255)
+  alvaraFuncionamentoUrl String?     @map("alvara_funcionamento_url") @db.Text
+  alvaraVigilanciaUrl    String?     @map("alvara_vigilancia_url") @db.Text
+  categoria              String?     @db.VarChar(255)
+  nomeResponsavel        String      @map("nome_responsavel") @db.VarChar(255)
+  cpfResponsavel         String      @map("cpf_responsavel") @db.VarChar(14)
+  contatoLocal           String?     @map("contato_local") @db.VarChar(255)
+  nomeLocal              String?     @map("nome_local") @db.VarChar(255)
+  endereco               String?     @db.VarChar(255)
+  descricao              String?     @db.Text
+  instagram              String?     @db.VarChar(255)
+  ativo                  Boolean?    @default(false)
+  status                 StatusLocal @default(pendente_aprovacao)
+  dadosAtualizacao       Json?       @map("dados_atualizacao")
+  latitude               Float?      @db.Float
+  longitude              Float?      @db.Float
+  createdAt              DateTime    @default(now()) @db.DateTime(0)
+  updatedAt              DateTime    @updatedAt @db.DateTime(0)
+  usuarioId              Int?        @map("usuario_id")
+  tipoCadastro           String?     @map("tipo_cadastro") @db.VarChar(255)
+  indicadorNome          String?     @map("indicador_nome") @db.VarChar(255)
+  indicadorContato       String?     @map("indicador_contato") @db.VarChar(255)
+  indicadorEmail         String?     @map("indicador_email") @db.VarChar(255)
+
+  avaliacoes    Avaliacao[]
+  locaisImg     ImagemLocal[]
+  dono          Usuario?       @relation("LocalDono", fields: [usuarioId], references: [usuarioId], onDelete: SetNull, map: "locais_ibfk_1")
+  usuarioLocais UsuarioLocal[]
+
+  @@index([usuarioId], map: "usuario_id")
+  @@map("locais")
+}
+
+model Avaliacao {
+  avaliacoesId Int     @id @default(autoincrement()) @map("avaliacoes_id")
+  comentario   String? @db.Text
+  nota         Float?
+  usuarioId    Int?    @map("usuario_id")
+  localId      Int?    @map("local_id")
+  parentId     Int?    @map("parent_id")
+
+  usuario   Usuario?    @relation(fields: [usuarioId], references: [usuarioId], onDelete: Cascade, map: "avaliacoes_ibfk_133")
+  local     Local?      @relation(fields: [localId], references: [localId], onDelete: Cascade, map: "avaliacoes_ibfk_134")
+  pai       Avaliacao?  @relation("AvaliacaoRespostas", fields: [parentId], references: [avaliacoesId], onDelete: Cascade, map: "avaliacoes_ibfk_135")
+  respostas Avaliacao[] @relation("AvaliacaoRespostas")
+
+  @@index([localId], map: "local_id")
+  @@index([parentId], map: "parent_id")
+  @@index([usuarioId], map: "usuario_id")
+  @@map("avaliacoes")
+}
+
+model ImagemLocal {
+  id      Int     @id @default(autoincrement())
+  url     String? @db.Text
+  localId Int?    @map("local_id")
+
+  local Local? @relation(fields: [localId], references: [localId], onDelete: Cascade, map: "imagens_local_ibfk_1")
+
+  @@index([localId], map: "local_id")
+  @@map("imagens_local")
+}
+
+model ContadorVisualizacao {
+  id            Int    @id @default(autoincrement())
+  identificador String @unique(map: "identificador") @db.VarChar(255)
+  visualizacoes Int    @default(0)
+
+  @@map("contador_visualizacoes")
+}
+
+model UsuarioLocal {
+  id        Int      @id @default(autoincrement())
+  usuarioId Int      @map("usuario_id")
+  localId   Int      @map("local_id")
+  visitedAt DateTime @default(now()) @map("visited_at") @db.DateTime(0)
+
+  usuario Usuario @relation(fields: [usuarioId], references: [usuarioId], onDelete: Cascade, map: "usuario_locais_ibfk_65")
+  local   Local   @relation(fields: [localId], references: [localId], onDelete: Cascade, map: "usuario_locais_ibfk_66")
+
+  @@unique([usuarioId, localId], map: "usuario_locais_localId_usuarioId_unique")
+  @@index([localId], map: "local_id")
+  @@map("usuario_locais")
 }

@@ -8,7 +8,7 @@ dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
 
 console.log("Servindo uploads em:", path.resolve(__dirname, "..", "uploads"));
 import app from "./app";
-import sequelize from "./config/database";
+import prisma from "./prisma";
 
 const PORT = process.env.PORT || 3306;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -31,11 +31,8 @@ function getLocalIpAddress(): string | undefined {
 
 (async () => {
   try {
-    await sequelize.authenticate();
-    console.log("Conexão com a base de dados estabelecida com sucesso (authenticate).");
-
-    await sequelize.sync({ alter: true });
-    console.log("✅ Banco de dados sincronizado (sequelize.sync alter: true)");
+    await prisma.$queryRaw`SELECT 1`;
+    console.log("Conexão com a base de dados estabelecida com sucesso (Prisma).");
 
     app.listen(Number(PORT), HOST, () => {
       const localIp = getLocalIpAddress();
@@ -49,7 +46,7 @@ function getLocalIpAddress(): string | undefined {
       console.log(`📘 Swagger UI: ${docsUrl} `);
     });
   } catch (err) {
-    console.error("❌ Não foi possível conectar ou sincronizar a base de dados:", err);
+    console.error("❌ Não foi possível conectar à base de dados:", err);
     process.exit(1);
   }
 })();

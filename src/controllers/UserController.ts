@@ -1,16 +1,14 @@
 import { Request, Response } from 'express';
 import AuthService from '../services/AuthService';
-import Local from '../entities/Local.entity';
-import ImagemLocal from '../entities/ImagemLocal.entity';
-import Avaliacao from '../entities/Avaliacao.entity';
-import Usuario from '../entities/Usuario.entity';
+import prisma from '../prisma';
+import { Local } from '@prisma/client';
 import fs from "fs/promises";
 import path from "path";
 import ProfanityFilter from "../utils/ProfanityFilter";
 
 interface AuthenticatedRequest extends Request {
     user?: {
-        id: number; 
+        id: number;
         username: string;
     };
     admin?: {
@@ -36,11 +34,11 @@ class UserController {
 
     public updateUserProfile = async (req: AuthenticatedRequest, res: Response): Promise<Response> => {
         try {
-            const userId = req.user?.id; 
+            const userId = req.user?.id;
             if (!userId) return res.status(401).json({ message: "Não autorizado" });
 
             const updatedUser = await AuthService.updateUserProfile(userId, req.body);
-            const { password, ...userDTO } = updatedUser.get({ plain: true });
+            const { password, ...userDTO } = updatedUser;
 
             return res.json(userDTO);
         } catch (error: any) {
@@ -50,7 +48,7 @@ class UserController {
 
     public deleteUserProfile = async (req: AuthenticatedRequest, res: Response): Promise<Response> => {
         try {
-            const userId = req.user?.id; 
+            const userId = req.user?.id;
             if (!userId) return res.status(401).json({ message: "Não autorizado" });
 
             await AuthService.deleteUser(userId);
@@ -62,7 +60,7 @@ class UserController {
 
     public updateUserPassword = async (req: AuthenticatedRequest, res: Response): Promise<Response> => {
         try {
-            const userId = req.user?.id; 
+            const userId = req.user?.id;
             if (!userId) return res.status(401).json({ message: "Não autorizado" });
 
             await AuthService.updateUserPassword(userId, req.body);
@@ -79,16 +77,12 @@ class UserController {
                 return res.status(400).json({ message: "Usuário alvo inválido. Informe usuarioId/userId válido." });
             }
 
-            const locais = await Local.findAll({
+            const locais = await prisma.local.findMany({
                 where: { usuarioId: userId },
-                include: [
-                    {
-                        model: ImagemLocal,
-                        as: "locaisImg",
-                        attributes: ["url"],
-                    },
-                ],
-                order: [["localId", "DESC"]],
+                include: {
+                    locaisImg: { select: { url: true } },
+                },
+                orderBy: { localId: "desc" },
             });
 
             return res.status(200).json({
@@ -107,16 +101,12 @@ class UserController {
                 return res.status(400).json({ message: "Usuário alvo inválido. Informe usuarioId/userId válido." });
             }
 
-            const comentarios = await Avaliacao.findAll({
+            const comentarios = await prisma.avaliacao.findMany({
                 where: { usuarioId: userId },
-                include: [
-                    {
-                        model: Local,
-                        as: "local",
-                        attributes: ["localId", "nomeLocal", "categoria"],
-                    },
-                ],
-                order: [["avaliacoesId", "DESC"]],
+                include: {
+                    local: { select: { localId: true, nomeLocal: true, categoria: true } },
+                },
+                orderBy: { avaliacoesId: "desc" },
             });
 
             return res.status(200).json({
@@ -135,21 +125,13 @@ class UserController {
                 return res.status(400).json({ message: "Usuário alvo inválido. Informe usuarioId/userId válido." });
             }
 
-            const avaliacoes = await Avaliacao.findAll({
+            const avaliacoes = await prisma.avaliacao.findMany({
                 where: { usuarioId: userId },
-                include: [
-                    {
-                        model: Local,
-                        as: "local",
-                        attributes: ["localId", "nomeLocal", "categoria"],
-                    },
-                    {
-                        model: Usuario,
-                        as: "usuario",
-                        attributes: ["usuarioId", "username", "nomeCompleto"],
-                    },
-                ],
-                order: [["avaliacoesId", "DESC"]],
+                include: {
+                    local: { select: { localId: true, nomeLocal: true, categoria: true } },
+                    usuario: { select: { usuarioId: true, username: true, nomeCompleto: true } },
+                },
+                orderBy: { avaliacoesId: "desc" },
             });
 
             return res.status(200).json({
@@ -240,7 +222,7 @@ class UserController {
                 return res.status(400).json({ message: "ID do estabelecimento inválido." });
             }
 
-            const local = await Local.findByPk(Number(localId));
+            const local = await prisma.local.findUnique({ where: { localId: Number(localId) } });
             if (!local) {
                 await this._deleteUploadedFilesOnFailure(req);
                 return res.status(404).json({ message: "Estabelecimento não encontrado." });
@@ -264,13 +246,14 @@ class UserController {
                 }
             }
 
-            // Atualizar campos básicos
-            if (dadosAtualizacao.nomeLocal) local.nomeLocal = dadosAtualizacao.nomeLocal;
-            if (dadosAtualizacao.categoria) local.categoria = dadosAtualizacao.categoria;
-            if (dadosAtualizacao.descricao) local.descricao = dadosAtualizacao.descricao;
-            if (dadosAtualizacao.endereco) local.endereco = dadosAtualizacao.endereco;
-            if (dadosAtualizacao.instagram) local.instagram = dadosAtualizacao.instagram;
-            if (dadosAtualizacao.contatoLocal) local.contatoLocal = dadosAtualizacao.contatoLocal;
+            // Monta os campos básicos a atualizar
+            const dataUpdate: Record<string, any> = {};
+            if (dadosAtualizacao.nomeLocal) dataUpdate.nomeLocal = dadosAtualizacao.nomeLocal;
+            if (dadosAtualizacao.categoria) dataUpdate.categoria = dadosAtualizacao.categoria;
+            if (dadosAtualizacao.descricao) dataUpdate.descricao = dadosAtualizacao.descricao;
+            if (dadosAtualizacao.endereco) dataUpdate.endereco = dadosAtualizacao.endereco;
+            if (dadosAtualizacao.instagram) dataUpdate.instagram = dadosAtualizacao.instagram;
+            if (dadosAtualizacao.contatoLocal) dataUpdate.contatoLocal = dadosAtualizacao.contatoLocal;
 
             // Atualizar logo se fornecida
             if (dadosAtualizacao.logoUrl) {
@@ -281,18 +264,19 @@ class UserController {
                         console.warn(`Falha ao deletar logo antiga: ${local.logoUrl}`);
                     }
                 }
-                local.logoUrl = dadosAtualizacao.logoUrl;
+                dataUpdate.logoUrl = dadosAtualizacao.logoUrl;
             }
 
-            await local.save();
+            await prisma.local.update({ where: { localId: local.localId }, data: dataUpdate });
 
             // Atualizar imagens se fornecidas
             if (dadosAtualizacao.imagens && Array.isArray(dadosAtualizacao.imagens) && dadosAtualizacao.imagens.length > 0) {
-                const imagensAntigas = await ImagemLocal.findAll({
+                const imagensAntigas = await prisma.imagemLocal.findMany({
                     where: { localId: local.localId },
                 });
 
                 for (const imagem of imagensAntigas) {
+                    if (!imagem.url) continue;
                     try {
                         await fs.unlink(path.join(__dirname, "..", "..", imagem.url));
                     } catch (err) {
@@ -300,23 +284,25 @@ class UserController {
                     }
                 }
 
-                await ImagemLocal.destroy({ where: { localId: local.localId } });
+                await prisma.imagemLocal.deleteMany({ where: { localId: local.localId } });
 
-                const novasImagens = dadosAtualizacao.imagens.map((url: string) => ({
-                    url,
-                    localId: local.localId,
-                }));
-                await ImagemLocal.bulkCreate(novasImagens);
+                await prisma.imagemLocal.createMany({
+                    data: dadosAtualizacao.imagens.map((url: string) => ({
+                        url,
+                        localId: local.localId,
+                    })),
+                });
             }
 
-            // Buscar imagens atualizadas para retornar
-            const imagensAtualizadas = await ImagemLocal.findAll({
+            // Buscar dados atualizados para retornar
+            const localAtualizadoDb = await prisma.local.findUnique({ where: { localId: local.localId } });
+            const imagensAtualizadas = await prisma.imagemLocal.findMany({
                 where: { localId: local.localId },
-                attributes: ["url"],
+                select: { url: true },
             });
 
-            const localAtualizado = local.toJSON();
-            (localAtualizado as any).locaisImg = imagensAtualizadas;
+            const localAtualizado: any = { ...localAtualizadoDb };
+            localAtualizado.locaisImg = imagensAtualizadas;
 
             return res.status(200).json({
                 message: "Estabelecimento atualizado com sucesso.",

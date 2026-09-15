@@ -1,19 +1,54 @@
 import { Request, Response, type NextFunction } from "express";
-import Local, { StatusLocal } from "../entities/Local.entity";
 import * as jwt from "jsonwebtoken";
-import ImagemLocal from "../entities/ImagemLocal.entity";
-import sequelize from "../config/database";
 import fs from "fs/promises";
 import path from "path";
+import prisma from "../prisma";
+import { StatusLocal, Prisma } from "@prisma/client";
 import EmailService from "../utils/EmailService";
 import LocalService from "../services/LocalService";
-import Avaliacao from "../entities/Avaliacao.entity";
-import Usuario from "../entities/Usuario.entity";
-import ContadorVisualizacao from "../entities/ContadorVisualizacao.entity";
 import adminService from "../services/AdminService";
 import AuthService from "../services/AuthService";
 import bcrypt from "bcryptjs";
 import { v4 as uuidv4 } from "uuid";
+
+// Usado para diferenciar "não encontrado" (404) de outras falhas dentro de uma
+// transação Prisma, já que o Prisma não tem um rollback "manual" como o Sequelize.
+class NotFoundError extends Error {}
+
+// Campos de Local que o admin pode editar via formulário (whitelist). O Prisma,
+// diferente do Sequelize, rejeita com erro qualquer chave desconhecida em `data`,
+// então não dá para espalhar `req.body` inteiro como antes.
+const LOCAL_EDITABLE_FIELDS = [
+  "logoUrl",
+  "emailResponsavel",
+  "contatoResponsavel",
+  "alvaraFuncionamentoUrl",
+  "alvaraVigilanciaUrl",
+  "categoria",
+  "nomeResponsavel",
+  "cpfResponsavel",
+  "contatoLocal",
+  "nomeLocal",
+  "endereco",
+  "descricao",
+  "instagram",
+  "latitude",
+  "longitude",
+  "tipoCadastro",
+  "indicadorNome",
+  "indicadorContato",
+  "indicadorEmail",
+] as const;
+
+function pickLocalEditableFields(data: Record<string, any>): Record<string, any> {
+  const picked: Record<string, any> = {};
+  for (const key of LOCAL_EDITABLE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(data, key)) {
+      picked[key] = data[key];
+    }
+  }
+  return picked;
+}
 
 export const aprovarAtualizacao = async (req: Request, res: Response) => {
     const { id } = req.params;
@@ -41,8 +76,6 @@ if (!ADMIN_USER || !ADMIN_PASSWORD || !JWT_SECRET) {
 }
 
 export class AdminController {
-  // Removido stub incorreto para `toggleLocalAtivo`.
-
   // Permite que o admin exclua definitivamente um local (usando AdminService)
   static async deleteLocal(req: Request, res: Response) {
     try {
@@ -79,16 +112,16 @@ export class AdminController {
       if (typeof ativoParam === 'boolean') {
         finalAtivo = ativoParam;
       } else {
-        const localAtual = await Local.findByPk(Number(id));
+        const localAtual = await prisma.local.findUnique({ where: { localId: Number(id) } });
         if (!localAtual) return res.status(404).json({ message: 'Local não encontrado.' });
-        const atual = !!(localAtual as any).ativo;
+        const atual = !!localAtual.ativo;
         finalAtivo = !atual;
       }
 
       const local = await LocalService.alterarStatusAtivo(Number(id), finalAtivo);
 
       // Para compatibilidade com o frontend, mapeamos o status para 'ativo' ou 'inativo'
-      const statusString = local.status === StatusLocal.ATIVO ? 'ativo' : 'inativo';
+      const statusString = local.status === StatusLocal.ativo ? 'ativo' : 'inativo';
 
       // RETORNO: preferimos enviar somente a string de status para que o frontend a leia
       return res.status(200).json({ status: statusString, local });
@@ -118,38 +151,32 @@ export class AdminController {
 
   static async getPending(req: Request, res: Response) {
     try {
-      const includeOptions = {
-        model: ImagemLocal,
-        // É importante que este "as" seja IGUAL ao que está configurado
-        // no arquivo de associação das tabelas (Local.hasMany(ImagemLocal...))
-        as: "locaisImg", 
-        attributes: ["url"],
-      };
+      const includeImagens = { locaisImg: { select: { url: true } } } as const;
 
-      const cadastros = await Local.findAll({
-        where: { status: StatusLocal.PENDENTE_APROVACAO },
-        include: [includeOptions],
+      const cadastros = await prisma.local.findMany({
+        where: { status: StatusLocal.pendente_aprovacao },
+        include: includeImagens,
       });
-      const atualizacoes = await Local.findAll({
-        where: { status: StatusLocal.PENDENTE_ATUALIZACAO },
-        include: [includeOptions],
+      const atualizacoes = await prisma.local.findMany({
+        where: { status: StatusLocal.pendente_atualizacao },
+        include: includeImagens,
       });
-      const exclusoes = await Local.findAll({
-        where: { status: StatusLocal.PENDENTE_EXCLUSAO },
-        include: [includeOptions],
+      const exclusoes = await prisma.local.findMany({
+        where: { status: StatusLocal.pendente_exclusao },
+        include: includeImagens,
       });
 
       // Novidade: indicações (cadastros do tipo 'indication')
-      const indicacoes = await Local.findAll({
+      const indicacoes = await prisma.local.findMany({
         where: { tipoCadastro: "indication" },
-        include: [includeOptions],
+        include: includeImagens,
       });
 
       // Função utilitária para deduplicar imagens por URL
-      const dedupeByUrl = (imgs: Array<{ url: string }> | undefined) => {
+      const dedupeByUrl = (imgs: Array<{ url: string | null }> | undefined) => {
         if (!imgs || !Array.isArray(imgs)) return [];
         const seen = new Set<string>();
-        const unique: Array<{ url: string }> = [];
+        const unique: Array<{ url: string | null }> = [];
         for (const im of imgs) {
           if (!im || !im.url) continue;
           if (!seen.has(im.url)) {
@@ -160,13 +187,13 @@ export class AdminController {
         return unique;
       };
 
-      // NOVIDADE: Adiciona as URLs de imagens que vêm do "dados_atualizacao"
+      // NOVIDADE: Adiciona as URLs de imagens que vêm do "dadosAtualizacao"
       // para que a aba "Atualizações" também mostre o portfólio novo.
       const formatarAtualizacoes = atualizacoes.map(local => {
-        const localData = local.toJSON() as any;
+        const localData: any = { ...local };
         // Se o pedido de atualização trouxe novas imagens, use-as (substitui o include)
-        if (localData.dados_atualizacao && localData.dados_atualizacao.imagens) {
-           localData.locaisImg = localData.dados_atualizacao.imagens.map((url: string) => ({ url }));
+        if (localData.dadosAtualizacao && localData.dadosAtualizacao.imagens) {
+           localData.locaisImg = localData.dadosAtualizacao.imagens.map((url: string) => ({ url }));
         }
         // Caso contrário, dedupe as imagens trazidas pelo include
         localData.locaisImg = dedupeByUrl(localData.locaisImg);
@@ -175,11 +202,11 @@ export class AdminController {
 
       // Deduplica imagens em cadastros e exclusoes também
       const formatarLista = (lista: any[]) => lista.map((local: any) => {
-        const localData = local.toJSON ? local.toJSON() : local;
+        const localData: any = { ...local };
         localData.locaisImg = dedupeByUrl(localData.locaisImg);
         return localData;
       });
-      
+
       const cadastrosFormatados = formatarLista(cadastros);
       const exclusoesFormatadas = formatarLista(exclusoes);
       const indicacoesFormatadas = formatarLista(indicacoes);
@@ -195,262 +222,286 @@ export class AdminController {
 
   static async approveRequest(req: Request, res: Response) {
     const { id } = req.params;
-    const transaction = await sequelize.transaction();
+
+    let responseMessage = "Solicitação aprovada com sucesso.";
+    let emailInfo: { subject: string; html: string } | null = null;
 
     try {
-      let responseMessage = "Solicitação aprovada com sucesso.";
+      const localResult = await prisma.$transaction(async (tx) => {
+        const local = await tx.local.findUnique({
+          where: { localId: Number(id) },
+          include: { locaisImg: true },
+        });
 
-      const local = await Local.findByPk(id, {
-        transaction,
-        include: [{ model: ImagemLocal, as: "locaisImg" }],
-      });
-      
-      if (!local) {
-        await transaction.rollback();
-        return res
-          .status(404)
-          .json({ message: "local não encontrado." });
-      }
-      
-      let emailInfo: { subject: string; html: string } | null = null;
+        if (!local) {
+          throw new NotFoundError("local não encontrado.");
+        }
 
-      switch (local.status) {
-        case StatusLocal.PENDENTE_APROVACAO:
-          local.status = StatusLocal.ATIVO;
-          local.ativo = true;
-          await local.save({ transaction });
+        switch (local.status) {
+          case StatusLocal.pendente_aprovacao: {
+            const updated = await tx.local.update({
+              where: { localId: local.localId },
+              data: { status: StatusLocal.ativo, ativo: true },
+            });
 
-          emailInfo = {
-            subject: "Seu cadastro no MeideSaquá foi Aprovado!",
-            html: `
-              <h1>Olá, ${local.nomeResponsavel}!</h1>
-              <p>Temos uma ótima notícia: o seu local, <strong>${local.nomeLocal}</strong>, foi aprovado e já está visível na nossa plataforma!</p>
-              <p>A partir de agora, clientes podem encontrar o seu negócio e deixar avaliações.</p>
-              <p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p>
-              <br>
-              <p>Atenciosamente,</p>
-              <p><strong>Equipe MeideSaquá.</strong></p>
-            `,
-          };
-          break;
+            emailInfo = {
+              subject: "Seu cadastro no MeideSaquá foi Aprovado!",
+              html: `
+                <h1>Olá, ${updated.nomeResponsavel}!</h1>
+                <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado e já está visível na nossa plataforma!</p>
+                <p>A partir de agora, clientes podem encontrar o seu negócio e deixar avaliações.</p>
+                <p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p>
+                <br>
+                <p>Atenciosamente,</p>
+                <p><strong>Equipe MeideSaquá.</strong></p>
+              `,
+            };
+            return updated;
+          }
 
-        case StatusLocal.PENDENTE_ATUALIZACAO:
-          if (local.dados_atualizacao) {
-            const dadosRecebidos = local.dados_atualizacao as any;
-            const dadosParaAtualizar: Partial<Local> & {
-              [key: string]: any;
-            } = {};
+          case StatusLocal.pendente_atualizacao: {
+            if (local.dadosAtualizacao) {
+              const dadosRecebidos = local.dadosAtualizacao as any;
+              const dadosParaAtualizar: Record<string, any> = {};
 
-            const camposPermitidos: (keyof Local | string)[] = [
-              "categoria",
-              "contatoLocal",
-              "nomeLocal",
-              "endereco",
-              "descricao",
-              "instagram",
-              "nomeResponsavel",
-              "cpfResponsavel",
-              "latitude",
-              "longitude",
-            ];
+              const camposPermitidos = [
+                "categoria",
+                "contatoLocal",
+                "nomeLocal",
+                "endereco",
+                "descricao",
+                "instagram",
+                "nomeResponsavel",
+                "cpfResponsavel",
+                "latitude",
+                "longitude",
+              ];
 
-            for (const key of camposPermitidos) {
-              if (
-                dadosRecebidos.hasOwnProperty(key) &&
-                dadosRecebidos[key] != null
-              ) {
-                (dadosParaAtualizar as any)[key] = dadosRecebidos[key];
-              }
-            }
-
-            const logoRecebida = dadosRecebidos.logoUrl || dadosRecebidos.logo;
-
-            // --- LÓGICA DA LOGO RESTAURADA ---
-            if (logoRecebida) {
-              const logoAntigaUrl = (local as any).logoUrl || (local as any).logo;
-              if (logoAntigaUrl) {
-                try {
-                  const filePath = path.join(
-                    __dirname,
-                    "..",
-                    "..",
-                    logoAntigaUrl
-                  );
-                  await fs.unlink(filePath);
-                } catch (err) {
-                  console.error(
-                    `AVISO: Falha ao deletar logo antiga: ${logoAntigaUrl}`,
-                    err
-                  );
+              for (const key of camposPermitidos) {
+                if (
+                  Object.prototype.hasOwnProperty.call(dadosRecebidos, key) &&
+                  dadosRecebidos[key] != null
+                ) {
+                  dadosParaAtualizar[key] = dadosRecebidos[key];
                 }
               }
-              dadosParaAtualizar.logoUrl = logoRecebida;
-            }
-            // --- FIM LOGICA LOGO ---
 
-            const imagensRecebidas = Array.isArray(dadosRecebidos.imagens)
-              ? dadosRecebidos.imagens
-              : Array.isArray(dadosRecebidos.produtos)
-                ? dadosRecebidos.produtos
-                : [];
+              const logoRecebida = dadosRecebidos.logoUrl || dadosRecebidos.logo;
 
-            // Lógica de imagens (Produtos/Portfólio) mantida
-            if (
-              Array.isArray(imagensRecebidas) &&
-              imagensRecebidas.length > 0
-            ) {
-              const imagensAntigas = await ImagemLocal.findAll({
+              // --- LÓGICA DA LOGO RESTAURADA ---
+              if (logoRecebida) {
+                const logoAntigaUrl = local.logoUrl;
+                if (logoAntigaUrl) {
+                  try {
+                    const filePath = path.join(
+                      __dirname,
+                      "..",
+                      "..",
+                      logoAntigaUrl
+                    );
+                    await fs.unlink(filePath);
+                  } catch (err) {
+                    console.error(
+                      `AVISO: Falha ao deletar logo antiga: ${logoAntigaUrl}`,
+                      err
+                    );
+                  }
+                }
+                dadosParaAtualizar.logoUrl = logoRecebida;
+              }
+              // --- FIM LOGICA LOGO ---
+
+              const imagensRecebidas = Array.isArray(dadosRecebidos.imagens)
+                ? dadosRecebidos.imagens
+                : Array.isArray(dadosRecebidos.produtos)
+                  ? dadosRecebidos.produtos
+                  : [];
+
+              // Lógica de imagens (Produtos/Portfólio) mantida
+              if (
+                Array.isArray(imagensRecebidas) &&
+                imagensRecebidas.length > 0
+              ) {
+                const imagensAntigas = await tx.imagemLocal.findMany({
+                  where: { localId: local.localId },
+                });
+
+                for (const imagem of imagensAntigas) {
+                  try {
+                    if (imagem.url) {
+                      const filePath = path.join(__dirname, "..", "..", imagem.url);
+                      await fs.unlink(filePath);
+                    }
+                  } catch (err) {
+                    console.error(
+                      `AVISO: Falha ao deletar imagem antiga: ${imagem.url}`,
+                      err
+                    );
+                  }
+                }
+
+                await tx.imagemLocal.deleteMany({
+                  where: { localId: local.localId },
+                });
+
+                await tx.imagemLocal.createMany({
+                  data: imagensRecebidas.map((url: string) => ({
+                    url,
+                    localId: local.localId,
+                  })),
+                });
+              }
+
+              dadosParaAtualizar.dadosAtualizacao = Prisma.DbNull;
+              dadosParaAtualizar.status = StatusLocal.ativo;
+              dadosParaAtualizar.ativo = true;
+
+              const updated = await tx.local.update({
                 where: { localId: local.localId },
-                transaction,
+                data: dadosParaAtualizar,
               });
 
+              emailInfo = {
+                subject:
+                  "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
+                html: `
+                  <h1>Olá, ${updated.nomeResponsavel}!</h1>
+                  <p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada.</p>
+                  <p>As novas informações já estão visíveis para todos na plataforma.</p>
+                  <br>
+                  <p>Atenciosamente,</p>
+                  <p><strong>Equipe MeideSaquá</strong></p>
+                `,
+              };
+              return updated;
+            } else {
+              const updated = await tx.local.update({
+                where: { localId: local.localId },
+                data: {
+                  dadosAtualizacao: Prisma.DbNull,
+                  status: StatusLocal.ativo,
+                  ativo: true,
+                },
+              });
+
+              emailInfo = {
+                subject:
+                  "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
+                html: `
+                  <h1>Olá, ${updated.nomeResponsavel}!</h1>
+                  <p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada.</p>
+                  <p>As novas informações já estão visíveis para todos na plataforma.</p>
+                  <br>
+                  <p>Atenciosamente,</p>
+                  <p><strong>Equipe MeideSaquá</strong></p>
+                `,
+              };
+              return updated;
+            }
+          }
+
+          case StatusLocal.pendente_exclusao: {
+            // Deleta arquivos associados (logo + imagens) antes de remover o local
+            try {
+              // função para sanitizar nome de pasta (mesma lógica usada no upload)
+              const sanitize = (name: string) => (name || "").replace(/[^a-z0-9]/gi, "_").toLowerCase();
+
+              // Deleta logo se existir
+              const logoUrl = local.logoUrl;
+              if (logoUrl) {
+                try {
+                  const filePath = path.join(__dirname, "..", "..", logoUrl);
+                  await fs.unlink(filePath);
+                  console.log(`Logo deletada: ${logoUrl}`);
+                } catch (err) {
+                  console.warn(`Falha ao deletar logo: ${logoUrl}`, err);
+                }
+              }
+
+              // Deleta todas as imagens registradas em ImagemLocal
+              const imagensAntigas = await tx.imagemLocal.findMany({ where: { localId: local.localId } });
               for (const imagem of imagensAntigas) {
                 try {
-                  const filePath = path.join(__dirname, "..", "..", imagem.url);
-                  await fs.unlink(filePath);
+                  if (imagem.url) {
+                    const filePath = path.join(__dirname, "..", "..", imagem.url);
+                    await fs.unlink(filePath);
+                    console.log(`Imagem deletada: ${imagem.url}`);
+                  }
                 } catch (err) {
-                  console.error(
-                    `AVISO: Falha ao deletar imagem antiga: ${imagem.url}`,
-                    err
-                  );
+                  console.warn(`Falha ao deletar imagem: ${imagem.url}`, err);
                 }
               }
 
-              await ImagemLocal.destroy({
-                where: { localId: local.localId },
-                transaction,
-              });
+              // Remove registros de imagens no banco
+              await tx.imagemLocal.deleteMany({ where: { localId: local.localId } });
 
-              const novasImagens = imagensRecebidas.map(
-                (url: string) => ({
-                  url,
-                  localId: local.localId,
-                })
-              );
-              await ImagemLocal.bulkCreate(novasImagens, { transaction });
-            }
-
-            dadosParaAtualizar.dados_atualizacao = null;
-            dadosParaAtualizar.status = StatusLocal.ATIVO;
-            dadosParaAtualizar.ativo = true;
-
-            await local.update(dadosParaAtualizar, { transaction });
-          } else {
-            local.dados_atualizacao = null;
-            local.status = StatusLocal.ATIVO;
-            local.ativo = true;
-            await local.save({ transaction });
-          }
-
-          emailInfo = {
-            subject:
-              "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
-            html: `
-              <h1>Olá, ${local.nomeResponsavel}!</h1>
-              <p>A sua solicitação para atualizar os dados do local <strong>${local.nomeLocal}</strong> foi aprovada.</p>
-              <p>As novas informações já estão visíveis para todos na plataforma.</p>
-              <br>
-              <p>Atenciosamente,</p>
-              <p><strong>Equipe MeideSaquá</strong></p>
-            `,
-          };
-          break;
-
-        case StatusLocal.PENDENTE_EXCLUSAO:
-          // Deleta arquivos associados (logo + imagens) antes de remover o local
-          try {
-            // função para sanitizar nome de pasta (mesma lógica usada no upload)
-            const sanitize = (name: string) => (name || "").replace(/[^a-z0-9]/gi, "_").toLowerCase();
-
-            // Deleta logo se existir
-            const logoUrl = (local as any).logoUrl || (local as any).logo;
-            if (logoUrl) {
+              // Remove pasta de uploads do local (se existir)
               try {
-                const filePath = path.join(__dirname, "..", "..", logoUrl);
-                await fs.unlink(filePath);
-                console.log(`Logo deletada: ${logoUrl}`);
+                const pasta = path.join(
+                  __dirname,
+                  "..",
+                  "..",
+                  "uploads",
+                  sanitize(local.categoria || "geral"),
+                  sanitize(local.nomeLocal || `local_${local.localId}`)
+                );
+                await fs.rm(pasta, { recursive: true, force: true });
+                console.log(`Pasta de uploads deletada: ${pasta}`);
               } catch (err) {
-                console.warn(`Falha ao deletar logo: ${logoUrl}`, err);
+                console.warn("Falha ao deletar pasta de uploads:", err);
               }
-            }
-
-            // Deleta todas as imagens registradas em ImagemLocal
-            const imagensAntigas = await ImagemLocal.findAll({ where: { localId: local.localId }, transaction });
-            for (const imagem of imagensAntigas) {
-              try {
-                const filePath = path.join(__dirname, "..", "..", imagem.url);
-                await fs.unlink(filePath);
-                console.log(`Imagem deletada: ${imagem.url}`);
-              } catch (err) {
-                console.warn(`Falha ao deletar imagem: ${imagem.url}`, err);
-              }
-            }
-
-            // Remove registros de imagens no banco
-            await ImagemLocal.destroy({ where: { localId: local.localId }, transaction });
-
-            // Remove pasta de uploads do local (se existir)
-            try {
-              const pasta = path.join(
-                __dirname,
-                "..",
-                "..",
-                "uploads",
-                sanitize(local.categoria || "geral"),
-                sanitize(local.nomeLocal || `local_${local.localId}`)
-              );
-              await fs.rm(pasta, { recursive: true, force: true });
-              console.log(`Pasta de uploads deletada: ${pasta}`);
             } catch (err) {
-              console.warn("Falha ao deletar pasta de uploads:", err);
+              console.error("Erro ao limpar arquivos antes de excluir local:", err);
             }
-          } catch (err) {
-            console.error("Erro ao limpar arquivos antes de excluir local:", err);
+
+            emailInfo = {
+              subject: "Seu local foi removido da plataforma MeideSaquá",
+              html: `
+                <h1>Olá, ${local.nomeResponsavel}.</h1>
+                <p>Informamos que a sua solicitação para remover o local <strong>${local.nomeLocal}</strong> da nossa plataforma foi concluída com sucesso.</p>
+                <p>Lamentamos a sua partida e esperamos poder colaborar com você novamente no futuro.</p>
+                <br>
+                <p>Atenciosamente,</p>
+                <p><strong>Equipe MeideSaquá</strong></p>
+              `,
+            };
+            await tx.local.delete({ where: { localId: local.localId } });
+            responseMessage = "local excluído com sucesso.";
+            return local;
           }
 
-          emailInfo = {
-            subject: "Seu local foi removido da plataforma MeideSaquá",
-            html: `
-              <h1>Olá, ${local.nomeResponsavel}.</h1>
-              <p>Informamos que a sua solicitação para remover o local <strong>${local.nomeLocal}</strong> da nossa plataforma foi concluída com sucesso.</p>
-              <p>Lamentamos a sua partida e esperamos poder colaborar com você novamente no futuro.</p>
-              <br>
-              <p>Atenciosamente,</p>
-              <p><strong>Equipe MeideSaquá</strong></p>
-            `,
-          };
-          await local.destroy({ transaction });
-           responseMessage = "local excluído com sucesso.";
-           break;
-      }
+          default:
+            return local;
+        }
+      });
 
-      await transaction.commit();
-
-      if (emailInfo && local.contatoLocal) {
+      if (emailInfo && localResult.contatoLocal) {
         try {
           await EmailService.sendGenericEmail({
-            to: local.contatoLocal,
-            subject: emailInfo.subject,
-            html: emailInfo.html,
+            to: localResult.contatoLocal,
+            subject: (emailInfo as { subject: string; html: string }).subject,
+            html: (emailInfo as { subject: string; html: string }).html,
           });
           console.log(
-            `Email de notificação enviado com sucesso para ${local.contatoLocal}`
+            `Email de notificação enviado com sucesso para ${localResult.contatoLocal}`
           );
         } catch (error) {
           console.error(
-            `Falha ao enviar email de notificação para ${local.contatoLocal}:`,
+            `Falha ao enviar email de notificação para ${localResult.contatoLocal}:`,
             error
           );
         }
       } else if (emailInfo) {
         console.warn(
-          `Tentativa de enviar email para local ID ${local.localId} sem contatoLocal definido.`
+          `Tentativa de enviar email para local ID ${localResult.localId} sem contatoLocal definido.`
         );
       }
 
       return res.status(200).json({ message: responseMessage });
     } catch (error) {
-      await transaction.rollback();
+      if (error instanceof NotFoundError) {
+        return res.status(404).json({ message: error.message });
+      }
       console.error("ERRO DURANTE A APROVAÇÃO:", error);
       return res
         .status(500)
@@ -475,174 +526,172 @@ export class AdminController {
       }
     }
 
-    const transaction = await sequelize.transaction();
+    let emailInfo: { subject: string; html: string } | null = null;
 
     try {
-      const local = await Local.findByPk(id, {
-        transaction,
-        include: [{ model: ImagemLocal, as: "locaisImg" }],
+      const updatedLocal = await prisma.$transaction(async (tx) => {
+        const local = await tx.local.findUnique({
+          where: { localId: Number(id) },
+          include: { locaisImg: true },
+        });
+
+        if (!local) {
+          throw new NotFoundError("Local não encontrado.");
+        }
+
+        const statusOriginal = local.status;
+        const dadosRecebidos = (local.dadosAtualizacao || {}) as any;
+
+        if (
+          statusOriginal === StatusLocal.pendente_atualizacao &&
+          local.dadosAtualizacao
+        ) {
+          const logoRecebida = dadosRecebidos.logoUrl || dadosRecebidos.logo;
+          const imagensRecebidas = Array.isArray(dadosRecebidos.imagens)
+            ? dadosRecebidos.imagens
+            : Array.isArray(dadosRecebidos.produtos)
+              ? dadosRecebidos.produtos
+              : [];
+
+          // --- LÓGICA DA LOGO RESTAURADA ---
+          if (
+            "logoUrl" in adminEditedData &&
+            adminEditedData.logoUrl === "DELETE"
+          ) {
+            const logoAntigaUrl = local.logoUrl || dadosRecebidos.logo;
+            if (logoAntigaUrl) {
+              try {
+                const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
+                await fs.unlink(filePath);
+              } catch (err) {
+                console.error(
+                  `AVISO: Falha ao deletar logo: ${logoAntigaUrl}`,
+                  err
+                );
+              }
+            }
+            adminEditedData.logoUrl = null;
+          } else if (logoRecebida) {
+            const logoAntigaUrl = local.logoUrl;
+            if (logoAntigaUrl) {
+              try {
+                const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
+                await fs.unlink(filePath);
+              } catch (err) {
+                console.error(
+                  `AVISO: Falha ao deletar logo antiga: ${logoAntigaUrl}`,
+                  err
+                );
+              }
+            }
+            adminEditedData.logoUrl = logoRecebida;
+          }
+          // --- FIM LÓGICA LOGO ---
+
+          // Lógica para IMAGENS
+          if (
+            Array.isArray(imagensRecebidas) &&
+            imagensRecebidas.length > 0
+          ) {
+            const imagensAntigas = await tx.imagemLocal.findMany({
+              where: { localId: local.localId },
+            });
+
+            for (const imagem of imagensAntigas) {
+              try {
+                if (imagem.url) {
+                  const filePath = path.join(__dirname, "..", "..", imagem.url);
+                  await fs.unlink(filePath);
+                }
+              } catch (err) {
+                // ignora
+              }
+            }
+
+            await tx.imagemLocal.deleteMany({
+              where: { localId: local.localId },
+            });
+
+            const imagensParaCriar = imagensRecebidas.filter(
+              (url: string) => !(urlsParaExcluir && urlsParaExcluir.includes(url))
+            );
+
+            await tx.imagemLocal.createMany({
+              data: imagensParaCriar.map((url: string) => ({
+                url,
+                localId: local.localId,
+              })),
+            });
+          } else if (
+            urlsParaExcluir &&
+            Array.isArray(urlsParaExcluir) &&
+            urlsParaExcluir.length > 0
+          ) {
+            const imagensParaDeletar = await tx.imagemLocal.findMany({
+              where: {
+                url: { in: urlsParaExcluir },
+                localId: local.localId,
+              },
+            });
+
+            for (const imagem of imagensParaDeletar) {
+              try {
+                if (imagem.url) {
+                  const filePath = path.join(__dirname, "..", "..", imagem.url);
+                  await fs.unlink(filePath);
+                }
+              } catch (err) {
+                // ignora
+              }
+            }
+
+            await tx.imagemLocal.deleteMany({
+              where: {
+                id: { in: imagensParaDeletar.map((img) => img.id) },
+              },
+            });
+          }
+        }
+
+        delete adminEditedData.urlsParaExcluir;
+
+        const updated = await tx.local.update({
+          where: { localId: local.localId },
+          data: {
+            ...pickLocalEditableFields(adminEditedData),
+            status: StatusLocal.ativo,
+            ativo: true,
+            dadosAtualizacao: Prisma.DbNull,
+          },
+        });
+
+        if (statusOriginal === StatusLocal.pendente_aprovacao) {
+          emailInfo = {
+            subject: "Seu cadastro no MeideSaquá foi Aprovado!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá.</strong></p>`,
+          };
+        } else if (
+          statusOriginal === StatusLocal.pendente_atualizacao
+        ) {
+          emailInfo = {
+            subject: "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá</strong></p>`,
+          };
+        }
+
+        return updated;
       });
 
-      if (!local) {
-        await transaction.rollback();
-        return res
-          .status(404)
-          .json({ message: "Local não encontrado." });
-      }
-
-      let emailInfo: { subject: string; html: string } | null = null;
-      const statusOriginal = local.status;
-      const dadosRecebidos = (local.dados_atualizacao || {}) as any;
-
-      if (
-        statusOriginal === StatusLocal.PENDENTE_ATUALIZACAO &&
-        local.dados_atualizacao
-      ) {
-        const logoRecebida = dadosRecebidos.logoUrl || dadosRecebidos.logo;
-        const imagensRecebidas = Array.isArray(dadosRecebidos.imagens)
-          ? dadosRecebidos.imagens
-          : Array.isArray(dadosRecebidos.produtos)
-            ? dadosRecebidos.produtos
-            : [];
-        
-        // --- LÓGICA DA LOGO RESTAURADA ---
-        if (
-          "logoUrl" in adminEditedData &&
-          adminEditedData.logoUrl === "DELETE"
-        ) {
-          const logoAntigaUrl = (local as any).logoUrl || dadosRecebidos.logo;
-          if (logoAntigaUrl) {
-            try {
-              const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
-              await fs.unlink(filePath);
-            } catch (err) {
-              console.error(
-                `AVISO: Falha ao deletar logo: ${logoAntigaUrl}`,
-                err
-              );
-            }
-          }
-          adminEditedData.logoUrl = null;
-        }
-        else if (logoRecebida) {
-          const logoAntigaUrl = (local as any).logoUrl;
-          if (logoAntigaUrl) {
-            try {
-              const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
-              await fs.unlink(filePath);
-            } catch (err) {
-              console.error(
-                `AVISO: Falha ao deletar logo antiga: ${logoAntigaUrl}`,
-                err
-              );
-            }
-          }
-          adminEditedData.logoUrl = logoRecebida;
-        }
-        // --- FIM LÓGICA LOGO ---
-
-        // Lógica para IMAGENS
-        if (
-          Array.isArray(imagensRecebidas) &&
-          imagensRecebidas.length > 0
-        ) {
-          const imagensAntigas = await ImagemLocal.findAll({
-            where: { localId: local.localId },
-            transaction,
-          });
-
-          for (const imagem of imagensAntigas) {
-            try {
-              const filePath = path.join(__dirname, "..", "..", imagem.url);
-              await fs.unlink(filePath);
-            } catch (err) {
-              // ignora
-            }
-          }
-
-          await ImagemLocal.destroy({
-            where: { localId: local.localId },
-            transaction,
-          });
-
-          const imagensParaCriar = imagensRecebidas.filter(
-            (url: string) => !(urlsParaExcluir && urlsParaExcluir.includes(url))
-          );
-
-          const novasImagens = imagensParaCriar.map((url: string) => ({
-            url,
-            localId: local.localId,
-          }));
-          await ImagemLocal.bulkCreate(novasImagens, { transaction });
-        } else if (
-          urlsParaExcluir &&
-          Array.isArray(urlsParaExcluir) &&
-          urlsParaExcluir.length > 0
-        ) {
-          const imagensParaDeletar = await ImagemLocal.findAll({
-            where: {
-              url: urlsParaExcluir,
-              localId: local.localId,
-            },
-            transaction,
-          });
-
-          for (const imagem of imagensParaDeletar) {
-            try {
-              const filePath = path.join(__dirname, "..", "..", imagem.url);
-              await fs.unlink(filePath);
-            } catch (err) {
-              // ignora
-            }
-          }
-
-          await ImagemLocal.destroy({
-            where: {
-              id: imagensParaDeletar.map((img) => img.id),
-            },
-            transaction,
-          });
-        }
-      }
-
-      delete adminEditedData.urlsParaExcluir;
-
-      await local.update(
-        {
-          ...adminEditedData,
-          status: StatusLocal.ATIVO,
-          ativo: true,
-          dados_atualizacao: null,
-        },
-        { transaction }
-      );
-
-      if (statusOriginal === StatusLocal.PENDENTE_APROVACAO) {
-        emailInfo = {
-          subject: "Seu cadastro no MeideSaquá foi Aprovado!",
-          html: `<h1>Olá, ${local.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${local.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá.</strong></p>`,
-        };
-      } else if (
-        statusOriginal === StatusLocal.PENDENTE_ATUALIZACAO
-      ) {
-        emailInfo = {
-          subject: "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
-          html: `<h1>Olá, ${local.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${local.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá</strong></p>`,
-        };
-      }
-
-      await transaction.commit();
-
-      if (emailInfo && local.contatoLocal) {
+      if (emailInfo && updatedLocal.contatoLocal) {
         try {
           await EmailService.sendGenericEmail({
-            to: local.contatoLocal,
-            subject: emailInfo.subject,
-            html: emailInfo.html,
+            to: updatedLocal.contatoLocal,
+            subject: (emailInfo as { subject: string; html: string }).subject,
+            html: (emailInfo as { subject: string; html: string }).html,
           });
         } catch (error) {
           console.error(
-            `Falha ao enviar email de notificação para ${local.contatoLocal}:`,
+            `Falha ao enviar email de notificação para ${updatedLocal.contatoLocal}:`,
             error
           );
         }
@@ -652,7 +701,9 @@ export class AdminController {
         .status(200)
         .json({ message: "Local editado e aprovado com sucesso." });
     } catch (error) {
-      await transaction.rollback();
+      if (error instanceof NotFoundError) {
+        return res.status(404).json({ message: error.message });
+      }
       console.error("ERRO DURANTE A EDIÇÃO E APROVAÇÃO:", error);
       return res
         .status(500)
@@ -689,175 +740,174 @@ export class AdminController {
       }
     }
 
-    const transaction = await sequelize.transaction();
+    let emailInfo: { subject: string; html: string } | null = null;
 
     try {
-      const local = await Local.findByPk(id, {
-        transaction,
-        include: [{ model: ImagemLocal, as: "locaisImg" }],
+      const updatedLocal = await prisma.$transaction(async (tx) => {
+        const local = await tx.local.findUnique({
+          where: { localId: Number(id) },
+          include: { locaisImg: true },
+        });
+
+        if (!local) {
+          throw new NotFoundError("Local não encontrado.");
+        }
+
+        const statusOriginal = local.status;
+        const dadosRecebidos = (local.dadosAtualizacao || {}) as any;
+        const logoRecebida = dadosRecebidos.logoUrl || dadosRecebidos.logo;
+        const imagensRecebidas = Array.isArray(dadosRecebidos.imagens)
+          ? dadosRecebidos.imagens
+          : Array.isArray(dadosRecebidos.produtos)
+            ? dadosRecebidos.produtos
+            : [];
+
+        // --- LÓGICA DA LOGO RESTAURADA ---
+        if (
+          "logoUrl" in adminEditedData &&
+          (adminEditedData.logoUrl === "DELETE" ||
+            adminEditedData.logoUrl === null)
+        ) {
+          const logoAntigaUrl = local.logoUrl || dadosRecebidos.logo;
+          if (logoAntigaUrl) {
+            try {
+              const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
+              await fs.unlink(filePath);
+              console.log(`Logo deletada: ${logoAntigaUrl}`);
+            } catch (err) {
+              console.error(
+                `AVISO: Falha ao deletar logo: ${logoAntigaUrl}`,
+                err
+              );
+            }
+          }
+          adminEditedData.logoUrl = null;
+        } else if (
+          (statusOriginal === StatusLocal.pendente_atualizacao ||
+            statusOriginal === StatusLocal.pendente_aprovacao) &&
+          logoRecebida
+        ) {
+          const logoAntigaUrl = local.logoUrl;
+          if (logoAntigaUrl) {
+            try {
+              const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
+              await fs.unlink(filePath);
+            } catch (err) {
+              console.error(
+                `AVISO: Falha ao deletar logo antiga: ${logoAntigaUrl}`,
+                err
+              );
+            }
+          }
+          adminEditedData.logoUrl = logoRecebida;
+        }
+        // --- FIM LÓGICA LOGO ---
+
+        // 1. LÓGICA DE IMAGENS DO PORTFÓLIO
+        if (
+          (statusOriginal === StatusLocal.pendente_atualizacao ||
+            statusOriginal === StatusLocal.pendente_aprovacao) &&
+          Array.isArray(imagensRecebidas) &&
+          imagensRecebidas.length > 0
+        ) {
+          const imagensAntigas = await tx.imagemLocal.findMany({
+            where: { localId: local.localId },
+          });
+
+          for (const imagem of imagensAntigas) {
+            try {
+              if (imagem.url) {
+                const filePath = path.join(__dirname, "..", "..", imagem.url);
+                await fs.unlink(filePath);
+              }
+            } catch (err) {
+              // ignora
+            }
+          }
+
+          await tx.imagemLocal.deleteMany({
+            where: { localId: local.localId },
+          });
+
+          const imagensParaCriar = imagensRecebidas.filter(
+            (url: string) => !(urlsParaExcluir && urlsParaExcluir.includes(url))
+          );
+
+          await tx.imagemLocal.createMany({
+            data: imagensParaCriar.map((url: string) => ({
+              url,
+              localId: local.localId,
+            })),
+          });
+        } else if (
+          urlsParaExcluir &&
+          Array.isArray(urlsParaExcluir) &&
+          urlsParaExcluir.length > 0
+        ) {
+          const imagensParaDeletar = await tx.imagemLocal.findMany({
+            where: {
+              url: { in: urlsParaExcluir },
+              localId: local.localId,
+            },
+          });
+
+          for (const imagem of imagensParaDeletar) {
+            try {
+              if (imagem.url) {
+                const filePath = path.join(__dirname, "..", "..", imagem.url);
+                await fs.unlink(filePath);
+              }
+            } catch (err) {
+              // ignora
+            }
+          }
+
+          await tx.imagemLocal.deleteMany({
+            where: {
+              id: { in: imagensParaDeletar.map((img) => img.id) },
+            },
+          });
+        }
+
+        delete adminEditedData.urlsParaExcluir;
+
+        const updated = await tx.local.update({
+          where: { localId: local.localId },
+          data: {
+            ...pickLocalEditableFields(adminEditedData),
+            status: StatusLocal.ativo,
+            ativo: true,
+            dadosAtualizacao: Prisma.DbNull,
+          },
+        });
+
+        if (statusOriginal === StatusLocal.pendente_aprovacao) {
+          emailInfo = {
+            subject: "Seu cadastro no MeideSaquá foi Aprovado!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${updated.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá.</strong></p>`,
+          };
+        } else if (
+          statusOriginal === StatusLocal.pendente_atualizacao
+        ) {
+          emailInfo = {
+            subject: "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
+            html: `<h1>Olá, ${updated.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${updated.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá</strong></p>`,
+          };
+        }
+
+        return updated;
       });
 
-      if (!local) {
-        await transaction.rollback();
-        return res
-          .status(404)
-          .json({ message: "Local não encontrado." });
-      }
-
-      const statusOriginal = local.status;
-      const dadosRecebidos = (local.dados_atualizacao || {}) as any;
-      const logoRecebida = dadosRecebidos.logoUrl || dadosRecebidos.logo;
-      const imagensRecebidas = Array.isArray(dadosRecebidos.imagens)
-        ? dadosRecebidos.imagens
-        : Array.isArray(dadosRecebidos.produtos)
-          ? dadosRecebidos.produtos
-          : [];
-      let emailInfo: { subject: string; html: string } | null = null;
-
-      // --- LÓGICA DA LOGO RESTAURADA ---
-      if (
-        "logoUrl" in adminEditedData &&
-        (adminEditedData.logoUrl === "DELETE" ||
-          adminEditedData.logoUrl === null)
-      ) {
-        const logoAntigaUrl = (local as any).logoUrl || dadosRecebidos.logo;
-        if (logoAntigaUrl) {
-          try {
-            const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
-            await fs.unlink(filePath);
-            console.log(`Logo deletada: ${logoAntigaUrl}`);
-          } catch (err) {
-            console.error(
-              `AVISO: Falha ao deletar logo: ${logoAntigaUrl}`,
-              err
-            );
-          }
-        }
-        adminEditedData.logoUrl = null;
-      } else if (
-        (statusOriginal === StatusLocal.PENDENTE_ATUALIZACAO ||
-          statusOriginal === StatusLocal.PENDENTE_APROVACAO) &&
-        logoRecebida
-      ) {
-        const logoAntigaUrl = (local as any).logoUrl;
-        if (logoAntigaUrl) {
-          try {
-            const filePath = path.join(__dirname, "..", "..", logoAntigaUrl);
-            await fs.unlink(filePath);
-          } catch (err) {
-            console.error(
-              `AVISO: Falha ao deletar logo antiga: ${logoAntigaUrl}`,
-              err
-            );
-          }
-        }
-        adminEditedData.logoUrl = logoRecebida;
-      }
-      // --- FIM LÓGICA LOGO ---
-
-      // 1. LÓGICA DE IMAGENS DO PORTFÓLIO
-      if (
-        (statusOriginal === StatusLocal.PENDENTE_ATUALIZACAO ||
-          statusOriginal === StatusLocal.PENDENTE_APROVACAO) &&
-        Array.isArray(imagensRecebidas) &&
-        imagensRecebidas.length > 0
-      ) {
-        const imagensAntigas = await ImagemLocal.findAll({
-          where: { localId: local.localId },
-          transaction,
-        });
-
-        for (const imagem of imagensAntigas) {
-          try {
-            const filePath = path.join(__dirname, "..", "..", imagem.url);
-            await fs.unlink(filePath);
-          } catch (err) {
-            // ignora
-          }
-        }
-
-        await ImagemLocal.destroy({
-          where: { localId: local.localId },
-          transaction,
-        });
-
-        const imagensParaCriar = imagensRecebidas.filter(
-          (url: string) => !(urlsParaExcluir && urlsParaExcluir.includes(url))
-        );
-
-        const novasImagens = imagensParaCriar.map((url: string) => ({
-          url,
-          localId: local.localId,
-        }));
-        await ImagemLocal.bulkCreate(novasImagens, { transaction });
-      } else if (
-        urlsParaExcluir &&
-        Array.isArray(urlsParaExcluir) &&
-        urlsParaExcluir.length > 0
-      ) {
-        const imagensParaDeletar = await ImagemLocal.findAll({
-          where: {
-            url: urlsParaExcluir,
-            localId: local.localId,
-          },
-          transaction,
-        });
-
-        for (const imagem of imagensParaDeletar) {
-          try {
-            const filePath = path.join(__dirname, "..", "..", imagem.url);
-            await fs.unlink(filePath);
-          } catch (err) {
-            // ignora
-          }
-        }
-
-        await ImagemLocal.destroy({
-          where: {
-            id: imagensParaDeletar.map((img) => img.id),
-          },
-          transaction,
-        });
-      }
-
-      delete adminEditedData.urlsParaExcluir;
-
-      await local.update(
-        {
-          ...adminEditedData,
-          status: StatusLocal.ATIVO,
-          ativo: true,
-          dados_atualizacao: null,
-        },
-        { transaction }
-      );
-
-      if (statusOriginal === StatusLocal.PENDENTE_APROVACAO) {
-        emailInfo = {
-          subject: "Seu cadastro no MeideSaquá foi Aprovado!",
-          html: `<h1>Olá, ${local.nomeResponsavel}!</h1> <p>Temos uma ótima notícia: o seu local, <strong>${local.nomeLocal}</strong>, foi aprovado (com algumas edições do administrador) e já está visível na nossa plataforma!</p><p>Agradecemos por fazer parte da comunidade de empreendedores de Saquarema.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá.</strong></p>`,
-        };
-      } else if (
-        statusOriginal === StatusLocal.PENDENTE_ATUALIZACAO
-      ) {
-        emailInfo = {
-          subject: "Sua solicitação de atualização no MeideSaquá foi Aprovada!",
-          html: `<h1>Olá, ${local.nomeResponsavel}!</h1><p>A sua solicitação para atualizar os dados do local <strong>${local.nomeLocal}</strong> foi aprovada (com algumas edições do administrador).</p><p>As novas informações já estão visíveis para todos na plataforma.</p><br><p>Atenciosamente,</p><p><strong>Equipe MeideSaquá</strong></p>`,
-        };
-      }
-
-      await transaction.commit();
-
-      if (emailInfo && local.contatoLocal) {
+      if (emailInfo && updatedLocal.contatoLocal) {
         try {
           await EmailService.sendGenericEmail({
-            to: local.contatoLocal,
-            subject: emailInfo.subject,
-            html: emailInfo.html,
+            to: updatedLocal.contatoLocal,
+            subject: (emailInfo as { subject: string; html: string }).subject,
+            html: (emailInfo as { subject: string; html: string }).html,
           });
         } catch (error) {
           console.error(
-            `Falha ao enviar email de notificação para ${local.contatoLocal}:`,
+            `Falha ao enviar email de notificação para ${updatedLocal.contatoLocal}:`,
             error
           );
         }
@@ -867,7 +917,9 @@ export class AdminController {
         .status(200)
         .json({ message: "Local editado e aprovado com sucesso." });
     } catch (error) {
-      await transaction.rollback();
+      if (error instanceof NotFoundError) {
+        return res.status(404).json({ message: error.message });
+      }
       console.error("ERRO DURANTE A EDIÇÃO E APROVAÇÃO:", error);
       return res
         .status(500)
@@ -880,12 +932,10 @@ export class AdminController {
       const { localId } = req.params;
       const localIdNum = Number(localId);
 
-      const local = await Local.findByPk(
-        localIdNum,
-        {
-          attributes: ["localId", "nomeLocal", "categoria"], 
-        }
-      );
+      const local = await prisma.local.findUnique({
+        where: { localId: localIdNum },
+        select: { localId: true, nomeLocal: true, categoria: true },
+      });
 
       if (!local) {
         return res
@@ -893,31 +943,22 @@ export class AdminController {
           .json({ message: "Local não encontrado." });
       }
 
-      const avaliacoes = await Avaliacao.findAll({
+      const avaliacoes = await prisma.avaliacao.findMany({
         where: { localId: localIdNum, parentId: null },
-        include: [
-          {
-            model: Usuario,
-            as: "usuario",
-            attributes: ["usuarioId", "nomeCompleto", "email"],
+        include: {
+          usuario: {
+            select: { usuarioId: true, nomeCompleto: true, email: true },
           },
-          {
-            model: Avaliacao,
-            as: "respostas",
-            required: false,
-            include: [
-              {
-                model: Usuario,
-                as: "usuario",
-                attributes: ["usuarioId", "nomeCompleto", "email"],
+          respostas: {
+            include: {
+              usuario: {
+                select: { usuarioId: true, nomeCompleto: true, email: true },
               },
-            ],
+            },
+            orderBy: { avaliacoesId: "asc" },
           },
-        ],
-        order: [
-          ["avaliacoesId", "DESC"],
-          [{ model: Avaliacao, as: "respostas" }, "avaliacoesId", "ASC"],
-        ],
+        },
+        orderBy: { avaliacoesId: "desc" },
       });
 
       return res.json({ local, avaliacoes });
@@ -934,13 +975,13 @@ export class AdminController {
     const { id } = req.params;
 
     try {
-      const avaliacao = await Avaliacao.findByPk(id);
+      const avaliacao = await prisma.avaliacao.findUnique({ where: { avaliacoesId: Number(id) } });
 
       if (!avaliacao) {
         return res.status(404).json({ message: "Avaliação não encontrada." });
       }
 
-      await avaliacao.destroy();
+      await prisma.avaliacao.delete({ where: { avaliacoesId: Number(id) } });
 
       return res
         .status(200)
@@ -1027,16 +1068,16 @@ export class AdminController {
   static async getDashboardStats(req: Request, res: Response) {
     try {
       // Atualizando para não buscar os campos escala e venda (que foram excluídos)
-      const Locais = await Local.findAll({
-        where: { status: StatusLocal.ATIVO },
-        attributes: ["localId", "categoria"], 
+      const Locais = await prisma.local.findMany({
+        where: { status: StatusLocal.ativo },
+        select: { localId: true, categoria: true },
       });
 
       const totalLocais = Locais.length;
 
-      const avaliacoes = await Avaliacao.findAll({
+      const avaliacoes = await prisma.avaliacao.findMany({
         where: { parentId: null },
-        attributes: ["nota"],
+        select: { nota: true },
       });
 
       const totalAvaliacoes = avaliacoes.length;
@@ -1075,13 +1116,13 @@ export class AdminController {
         .sort((a, b) => b.qtd - a.qtd)
         .slice(0, 10);
 
-      const totalUsuarios = await Usuario.count();
-      const visualizacoesRaw = await ContadorVisualizacao.findAll();
+      const totalUsuarios = await prisma.usuario.count();
+      const visualizacoesRaw = await prisma.contadorVisualizacao.findMany();
 
       const pageViews = { home: 0, espacoExplore: 0, categoriasTotal: 0 };
       const mapaVisualizacoes: { [key: string]: number } = {};
       const mapaCursos: { [key: string]: number } = {};
-      
+
       const espacoExploreClicks = { gov: 0, wpp: 0, email: 0 };
       let perfilCompartilhado = 0;
 
@@ -1144,18 +1185,18 @@ export class AdminController {
       const { id } = req.params;
       const { reason } = req.body;
 
-      const local = await Local.findByPk(id);
+      const local = await prisma.local.findUnique({ where: { localId: Number(id) } });
       if (!local) return res.status(404).json({ message: "Local não encontrado." });
 
       await adminService.rejeitarSolicitacao(Number(id));
 
       // Tenta notificar por email se houver contato
-      if ((local as any).contatoLocal) {
+      if (local.contatoLocal) {
         try {
           await EmailService.sendGenericEmail({
-            to: (local as any).contatoLocal,
+            to: local.contatoLocal,
             subject: "Sua solicitação foi rejeitada",
-            html: `<p>Sua solicitação para o local <strong>${(local as any).nomeLocal}</strong> foi rejeitada.</p><p>${reason || ''}</p>`,
+            html: `<p>Sua solicitação para o local <strong>${local.nomeLocal}</strong> foi rejeitada.</p><p>${reason || ''}</p>`,
           });
         } catch (err) {
           console.error('Falha ao enviar email de rejeição:', err);
@@ -1185,30 +1226,49 @@ export class AdminController {
 
   static async getAllUsers(req: Request, res: Response) {
     try {
-      const users = await Usuario.findAll({
-        attributes: { exclude: ["password", "confirmationToken", "resetPasswordToken", "resetPasswordTokenExpiry", "emailChangeToken"] },
+      const users = await prisma.usuario.findMany({
+        select: {
+          usuarioId: true,
+          nomeCompleto: true,
+          username: true,
+          email: true,
+          enabled: true,
+          unconfirmedEmail: true,
+          progressPercentage: true,
+          currentTag: true,
+        },
       });
 
-      const usersComInteracoes = await Promise.all(
-        users.map(async (user) => {
-          const userData = user.toJSON() as any;
+      // Evita N+1 (uma query de contagem por usuário): agrega tudo de uma vez com groupBy.
+      const [comentariosPorUsuario, locaisPorUsuario] = await Promise.all([
+        prisma.avaliacao.groupBy({
+          by: ["usuarioId"],
+          where: { parentId: null },
+          _count: { _all: true },
+        }),
+        prisma.local.groupBy({
+          by: ["usuarioId"],
+          _count: { _all: true },
+        }),
+      ]);
 
-          const [comentariosCount, projetosCount] = await Promise.all([
-            Avaliacao.count({ where: { usuarioId: userData.usuarioId, parentId: null } }),
-            Local.count({ where: { usuarioId: userData.usuarioId } }),
-          ]);
+      const comentariosMap = new Map(comentariosPorUsuario.map((c) => [c.usuarioId, c._count._all]));
+      const locaisMap = new Map(locaisPorUsuario.map((l) => [l.usuarioId, l._count._all]));
 
-          return {
-            ...userData,
-            interacoes: {
-              comentariosCount,
-              projetosCount,
-              fezComentario: comentariosCount > 0,
-              temProjetoCadastrado: projetosCount > 0,
-            },
-          };
-        })
-      );
+      const usersComInteracoes = users.map((userData) => {
+        const comentariosCount = comentariosMap.get(userData.usuarioId) ?? 0;
+        const projetosCount = locaisMap.get(userData.usuarioId) ?? 0;
+
+        return {
+          ...userData,
+          interacoes: {
+            comentariosCount,
+            projetosCount,
+            fezComentario: comentariosCount > 0,
+            temProjetoCadastrado: projetosCount > 0,
+          },
+        };
+      });
 
       return res.status(200).json(usersComInteracoes);
     } catch (error: any) {
@@ -1223,8 +1283,7 @@ export class AdminController {
       if (Number.isNaN(id)) return res.status(400).json({ message: "ID inválido." });
 
       const updated = await AuthService.updateUserProfile(id, req.body);
-      const userObj = (updated && typeof updated.get === 'function') ? updated.get({ plain: true }) : updated;
-      const { password, ...safe } = userObj as any;
+      const { password, ...safe } = updated;
       return res.status(200).json(safe);
     } catch (error: any) {
       console.error("Erro ao atualizar usuário (admin):", error);
@@ -1254,14 +1313,14 @@ export class AdminController {
         return res.status(400).json({ message: "A nova senha é obrigatória e deve ter ao menos 6 caracteres." });
       }
 
-      const user = await Usuario.findByPk(id);
+      const user = await prisma.usuario.findUnique({ where: { usuarioId: id } });
       if (!user) return res.status(404).json({ message: "Usuário não encontrado." });
 
       const hashed = await bcrypt.hash(newPassword, 10);
-      (user as any).password = hashed;
-      (user as any).resetPasswordToken = null;
-      (user as any).resetPasswordTokenExpiry = null;
-      await user.save();
+      await prisma.usuario.update({
+        where: { usuarioId: id },
+        data: { password: hashed, resetPasswordToken: null, resetPasswordTokenExpiry: null },
+      });
 
       return res.status(200).json({ message: "Senha atualizada com sucesso." });
     } catch (error: any) {
@@ -1275,18 +1334,17 @@ export class AdminController {
       const id = Number(req.params.id);
       if (Number.isNaN(id)) return res.status(400).json({ message: "ID inválido." });
 
-      const user = await Usuario.findByPk(id);
+      const user = await prisma.usuario.findUnique({ where: { usuarioId: id } });
       if (!user) return res.status(404).json({ message: "Usuário não encontrado." });
-      if ((user as any).enabled) return res.status(400).json({ message: "Usuário já verificado." });
+      if (user.enabled) return res.status(400).json({ message: "Usuário já verificado." });
 
-      let token = (user as any).confirmationToken;
+      let token = user.confirmationToken;
       if (!token) {
         token = uuidv4();
-        (user as any).confirmationToken = token;
-        await user.save();
+        await prisma.usuario.update({ where: { usuarioId: id }, data: { confirmationToken: token } });
       }
 
-      await EmailService.sendConfirmationEmail((user as any).email, token);
+      await EmailService.sendConfirmationEmail(user.email, token);
       return res.status(200).json({ message: "Email de confirmação reenviado." });
     } catch (error: any) {
       console.error("Erro ao reenviar email de confirmação (admin):", error);

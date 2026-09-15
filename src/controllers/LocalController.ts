@@ -2,8 +2,8 @@ import { Request, Response } from "express";
 import LocalService from "../services/LocalService";
 import fs from "fs/promises";
 import path from "path";
-import Local from "../entities/Local.entity";
-import ContadorVisualizacao from "../entities/ContadorVisualizacao.entity";
+import prisma from "../prisma";
+import { Prisma } from "@prisma/client";
 import ProfanityFilter from "../utils/ProfanityFilter";
 
 class LocalController {
@@ -23,10 +23,10 @@ class LocalController {
   };
 
   private _handleError = (error: any, res: Response): Response => {
-    if (error.name === "SequelizeDatabaseError" && error.message.includes("Data too long for column")) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2000") {
       return res.status(400).json({ message: "Um dos campos excedeu o limite de caracteres permitido." });
     }
-    if (error.message.includes("não encontrado")) {
+    if (error.message?.includes("não encontrado")) {
       return res.status(404).json({ message: error.message });
     }
     console.error("ERRO NO CONTROLLER:", error);
@@ -36,7 +36,7 @@ class LocalController {
   // Prepara os dados e move os arquivos para as pastas definitivas
   private _moveFilesAndPrepareData = async (
     req: Request,
-    existingInfo?: { categoria: string; nomeLocal: string }
+    existingInfo?: { categoria: string | null; nomeLocal: string | null }
   ): Promise<any> => {
     const dadosDoFormulario = req.body;
     const arquivos = (req.files as { [fieldname: string]: Express.Multer.File[] } | undefined) || {};
@@ -183,9 +183,9 @@ class LocalController {
       let localId = localIdInformado;
 
       if (!localId && usuarioLogadoId) {
-        const localDoUsuario = await Local.findOne({
+        const localDoUsuario = await prisma.local.findFirst({
           where: { usuarioId: usuarioLogadoId },
-          order: [["localId", "DESC"]],
+          orderBy: { localId: "desc" },
         });
 
         localId = localDoUsuario?.localId ?? 0;
@@ -195,7 +195,7 @@ class LocalController {
         return res.status(400).json({ message: "Não foi possível identificar o local para exclusão." });
       }
 
-      const localExistente = await Local.findByPk(localId);
+      const localExistente = await prisma.local.findUnique({ where: { localId } });
       if (!localExistente) return res.status(404).json({ message: "Local não encontrado." });
 
       if (usuarioLogadoId && localExistente.usuarioId && Number(localExistente.usuarioId) !== Number(usuarioLogadoId)) {
@@ -289,12 +289,17 @@ class LocalController {
         chaveFormatada = "CAT_" + chaveFormatada.replace(/[^A-Z0-9]/g, "_");
       }
 
-      const [registro] = await ContadorVisualizacao.findOrCreate({
-        where: { identificador: chaveFormatada },
-        defaults: { visualizacoes: 0 },
-      });
+      let registro = await prisma.contadorVisualizacao.findUnique({ where: { identificador: chaveFormatada } });
+      if (!registro) {
+        registro = await prisma.contadorVisualizacao.create({
+          data: { identificador: chaveFormatada, visualizacoes: 0 },
+        });
+      }
 
-      await registro.increment("visualizacoes");
+      await prisma.contadorVisualizacao.update({
+        where: { id: registro.id },
+        data: { visualizacoes: { increment: 1 } },
+      });
       return res.status(200).json({ success: true });
     } catch (error: any) {
       return res.status(500).json({ message: "Erro interno." });

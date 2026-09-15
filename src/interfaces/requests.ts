@@ -1,4 +1,4 @@
-import { StatusLocal } from "../entities/Local.entity";
+import { StatusLocal } from "@prisma/client";
 
 export interface IUpdateProfileRequest {
   nomeCompleto?: string;

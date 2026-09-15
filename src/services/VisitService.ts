@@ -1,7 +1,4 @@
-import Usuario from '../entities/Usuario.entity';
-import Local from '../entities/Local.entity';
-import UsuarioLocal from '../entities/UsuarioLocal.entity';
-import sequelize from '../config/database';
+import prisma from '../prisma';
 
 class VisitService {
 
@@ -38,39 +35,33 @@ class VisitService {
 
   public static async markVisited(userId: number, localId: number) {
     // Verifica existência do usuário
-    const user = await Usuario.findByPk(userId);
+    const user = await prisma.usuario.findUnique({ where: { usuarioId: userId } });
     if (!user) return { status: 404, body: { message: 'Usuário não encontrado' } };
 
-    // Verifica existência do local e se está ativo
-    const local = await Local.findByPk(localId);
+    // Verifica existência do local
+    const local = await prisma.local.findUnique({ where: { localId } });
     if (!local) return { status: 404, body: { message: 'Local não encontrado' } };
-    if (local.status !== (Local as any).prototype.status && (local.status !== 'ativo')) {
-      // se não estiver ativo, retornamos 400
-      // comparações cuidadosas por enum
-    }
 
     // Transação para garantir consistência ao criar visita e atualizar progresso
-    const tx = await sequelize.transaction();
-
-    try {
+    const result = await prisma.$transaction(async (tx) => {
       // Cria ou atualiza registro de visita (evita duplicatas)
-      const [record, created] = await UsuarioLocal.findOrCreate({
-        where: { usuarioId: userId, localId },
-        defaults: { usuarioId: userId, localId },
-        transaction: tx,
-      });
+      const existing = await tx.usuarioLocal.findFirst({ where: { usuarioId: userId, localId } });
 
-      // Se já existia, atualiza visitedAt
-      if (!created) {
-        record.set('visitedAt', new Date());
-        await record.save({ transaction: tx });
+      if (existing) {
+        // Se já existia, atualiza visitedAt
+        await tx.usuarioLocal.update({
+          where: { id: existing.id },
+          data: { visitedAt: new Date() },
+        });
+      } else {
+        await tx.usuarioLocal.create({ data: { usuarioId: userId, localId } });
       }
 
       // Conta total de locais visitados pelo usuário
-      const visitedCount = await UsuarioLocal.count({ where: { usuarioId: userId }, transaction: tx });
+      const visitedCount = await tx.usuarioLocal.count({ where: { usuarioId: userId } });
 
       // Conta total de locais ativos no sistema (usa campo 'ativo' do model)
-      const totalActiveLocations = await Local.count({ where: { ativo: true }, transaction: tx });
+      const totalActiveLocations = await tx.local.count({ where: { ativo: true } });
 
       // Calcula porcentagem (tratamento divisão por zero)
       let percentage = 0;
@@ -86,24 +77,21 @@ class VisitService {
       const updateObj = VisitService.buildProgressUpdate({ percentage, tag });
 
       // Atualiza usuário
-      await Usuario.update(updateObj, { where: { usuarioId: userId }, transaction: tx });
+      await tx.usuario.update({ where: { usuarioId: userId }, data: updateObj });
 
-      await tx.commit();
+      return { visitedCount, totalActiveLocations, percentage, tag };
+    });
 
-      return {
-        status: 200,
-        body: {
-          message: 'Visita registrada e progresso atualizado',
-          visitedCount,
-          totalActiveLocations,
-          progressPercentage: Number(percentage.toFixed(2)),
-          currentTag: tag,
-        },
-      };
-    } catch (error) {
-      await tx.rollback();
-      throw error;
-    }
+    return {
+      status: 200,
+      body: {
+        message: 'Visita registrada e progresso atualizado',
+        visitedCount: result.visitedCount,
+        totalActiveLocations: result.totalActiveLocations,
+        progressPercentage: Number(result.percentage.toFixed(2)),
+        currentTag: result.tag,
+      },
+    };
   }
 }
 
